@@ -98,18 +98,25 @@ jobs:
       - name: Package client
         shell: pwsh
         run: |
-          $release = 'client/release/IP-Sentinel-Windows'
+          $release = 'client/release'
+          $source = 'client/SchoolIpSet.Client/bin/Release/net48/IP-Sentinel-Windows.exe'
+          $target = Join-Path $release 'IP-Sentinel-Windows.exe'
           New-Item -ItemType Directory -Force -Path $release | Out-Null
-          Copy-Item 'client/SchoolIpSet.Client/bin/Release/net48/*' $release -Recurse -Force
-          Copy-Item 'client/README.md' $release
-          Compress-Archive -Path "$release/*" -DestinationPath 'client/release/IP-Sentinel-Windows.zip' -Force
+          if (-not (Test-Path -LiteralPath $source)) {
+            throw "未找到客户端构建产物: $source"
+          }
+          Copy-Item -LiteralPath $source -Destination $target -Force
+          $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+          "IP-Sentinel-Windows.exe  $hash" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Write-Host "Single-file client: $target"
+          Write-Host "SHA-256: $hash"
       - name: Upload client artifact
         uses: actions/upload-artifact@v4
         with:
           name: IP-Sentinel-Windows-${{ github.sha }}
-          path: client/release/IP-Sentinel-Windows.zip
+          path: client/release/IP-Sentinel-Windows.exe
       - name: Create GitHub release for version tags
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${{ github.ref_name }}" client/release/IP-Sentinel-Windows.zip --title "IP Sentinel ${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" client/release/IP-Sentinel-Windows.exe --title "IP Sentinel ${{ github.ref_name }}" --generate-notes

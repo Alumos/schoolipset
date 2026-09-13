@@ -6,7 +6,7 @@
     <EnableDefaultApplicationDefinition>true</EnableDefaultApplicationDefinition>
     <EnableDefaultPageItems>true</EnableDefaultPageItems>
     <RootNamespace>SchoolIpSet.Client</RootNamespace>
-    <AssemblyName>SchoolIpSet.Client</AssemblyName>
+    <AssemblyName>IP-Sentinel-Windows</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <PlatformTarget>AnyCPU</PlatformTarget>
     <Prefer32Bit>true</Prefer32Bit>
@@ -14,6 +14,8 @@
     <Nullable>disable</Nullable>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
@@ -21,12 +23,10 @@
     <Reference Include="System.Configuration" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Security" />
+    <Reference Include="System.Web.Extensions" />
     <Reference Include="WindowsBase" />
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
     <Reference Include="System.Xaml" />
-  </ItemGroup>
-  <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 </Project>
