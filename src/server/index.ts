@@ -680,8 +680,9 @@ const createApi = async (db: Db, config: AppConfig): Promise<FastifyInstance> =>
 const createAdmin = async (config: AppConfig): Promise<FastifyInstance> => {
   const app = Fastify({ logger: true });
   const staticRoot = path.resolve(process.cwd(), 'dist/web');
-  if (fs.existsSync(staticRoot)) {
-    await app.register(fastifyStatic, { root: staticRoot, prefix: '/assets/', wildcard: false });
+  const assetsRoot = path.join(staticRoot, 'assets');
+  if (fs.existsSync(assetsRoot)) {
+    await app.register(fastifyStatic, { root: assetsRoot, prefix: '/assets/' });
   }
   const serveIndex = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     const index = path.join(staticRoot, 'index.html');
@@ -689,7 +690,7 @@ const createAdmin = async (config: AppConfig): Promise<FastifyInstance> => {
       await reply.code(503).type('text/plain; charset=utf-8').send('后台前端尚未构建，请运行 npm run build');
       return;
     }
-    await reply.type('text/html; charset=utf-8').sendFile('index.html');
+    await reply.type('text/html; charset=utf-8').send(fs.createReadStream(index));
   };
   app.get('/healthz', async () => ({ status: 'ok', service: 'schoolipset-admin', port: config.adminPort }));
   app.get('/', serveIndex);
