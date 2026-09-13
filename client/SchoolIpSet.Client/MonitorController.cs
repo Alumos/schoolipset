@@ -47,8 +47,6 @@ namespace SchoolIpSet.Client
             if (String.IsNullOrWhiteSpace(state.DeviceKey))
             {
                 state.DeviceKey = Guid.NewGuid().ToString("N");
-                state.PublicKeyJwk = ClientCrypto.CreateDeviceKey(out var privateXml);
-                state.PrivateKeyXml = privateXml;
                 LocalState.Save(state);
             }
             var response = await api.RegisterRawAsync(state, name.Trim()).ConfigureAwait(false);

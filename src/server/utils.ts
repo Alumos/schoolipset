@@ -68,6 +68,9 @@ export const normalizeMac = (value: string): string | null => {
 export const hashMac = (mac: string, secret: string): string =>
   createHmac('sha256', secret).update(mac).digest('hex');
 
+export const hashOpaqueToken = (token: string): string =>
+  createHash('sha256').update(token).digest('hex');
+
 export const sha256 = (buffer: Buffer): string => createHash('sha256').update(buffer).digest('hex');
 
 export const constantTimeEqual = (left: string, right: string): boolean => {

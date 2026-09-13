@@ -9,13 +9,6 @@ import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
 import { loadConfig, type AppConfig } from './config.js';
 import { openDatabase, type Db } from './db.js';
-import {
-  decryptRequestBody,
-  getServerPublicJwk,
-  hashOpaqueToken,
-  responseBody,
-  validatePublicJwk,
-} from './crypto.js';
 import { loginAdmin, requireAdmin, clearExpiredSessions } from './auth.js';
 import { commitImport, parseXlsx, type ImportPreview } from './importer.js';
 import {
@@ -27,12 +20,12 @@ import {
   nowIso,
   parseJsonArray,
   constantTimeEqual,
+  hashOpaqueToken,
 } from './utils.js';
 
 const registerSchema = z.object({
   name: z.string().min(1).max(80),
   deviceKey: z.string().min(8).max(160),
-  publicKey: z.string().optional(),
   hostname: z.string().max(160).optional(),
   clientVersion: z.string().max(40).optional(),
 });
@@ -82,7 +75,6 @@ type DeviceRow = {
   id: number;
   teacher_id: number;
   device_key: string;
-  public_key: string | null;
   token_hash: string | null;
   name: string;
   enabled: number;
@@ -173,7 +165,7 @@ const addAudit = (
 const findDeviceByCredentials = (db: Db, deviceKey: string, token: string): DeviceRow | undefined =>
   db
     .prepare(
-      `SELECT d.id, d.teacher_id, d.device_key, d.public_key, d.token_hash,
+      `SELECT d.id, d.teacher_id, d.device_key, d.token_hash,
               t.name, t.enabled
          FROM devices d
          JOIN teachers t ON t.id = d.teacher_id
@@ -184,21 +176,16 @@ const findDeviceByCredentials = (db: Db, deviceKey: string, token: string): Devi
 const findAssignment = (db: Db, teacherId: number): AssignmentRow | undefined =>
   db.prepare('SELECT * FROM ip_assignments WHERE teacher_id = ?').get(teacherId) as AssignmentRow | undefined;
 
-const parseDeviceBody = (request: FastifyRequest, config: AppConfig): { payload: Record<string, unknown>; encrypted: boolean } => {
-  try {
-    return decryptRequestBody(request.body, config);
-  } catch (error) {
-    throw new Error(error instanceof Error ? error.message : 'invalid encrypted payload');
+const parseDeviceBody = (request: FastifyRequest): Record<string, unknown> => {
+  const body = request.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new Error('请求正文必须是 JSON 对象');
   }
+  return body as Record<string, unknown>;
 };
 
-const sendDevicePayload = (
-  reply: FastifyReply,
-  payload: Record<string, unknown>,
-  publicKey: string | null | undefined,
-  config: AppConfig,
-): void => {
-  reply.send(responseBody(payload, publicKey, config));
+const sendDevicePayload = (reply: FastifyReply, payload: Record<string, unknown>): void => {
+  reply.send(payload);
 };
 
 const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void => {
@@ -443,33 +430,19 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
     });
   });
 
-  app.get('/v1/device/server-key', async (_request, reply) => {
-    const publicKey = getServerPublicJwk(config);
-    if (!publicKey) return sendError(reply, 503, '服务端设备加密公钥尚未配置');
-    return reply.send({ keyId: config.deviceServerKeyId, publicKey: JSON.parse(publicKey), algorithm: 'RSA-OAEP-SHA256+AES-256-CBC-HMAC-SHA256' });
-  });
-
   app.post('/v1/device/register', async (request, reply) => {
     try {
-      const { payload } = parseDeviceBody(request, config);
+      const payload = parseDeviceBody(request);
       const parsed = registerSchema.parse(payload);
       const nameKey = normalizeNameKey(parsed.name);
       const teacher = db.prepare('SELECT id, name, enabled FROM teachers WHERE name_key = ?').get(nameKey) as
         | { id: number; name: string; enabled: number }
         | undefined;
       if (!teacher || !teacher.enabled) return sendError(reply, 404, '后台没有找到已启用的教师名单');
-      let publicKey: string | null = null;
-      if (parsed.publicKey) {
-        try {
-          publicKey = validatePublicJwk(parsed.publicKey);
-        } catch {
-          return sendError(reply, 422, '客户端公钥格式不正确');
-        }
-      }
       const existing = db
-        .prepare('SELECT id, token_hash, public_key, revoked_at FROM devices WHERE teacher_id = ? AND device_key = ?')
+        .prepare('SELECT id, token_hash, revoked_at FROM devices WHERE teacher_id = ? AND device_key = ?')
         .get(teacher.id, parsed.deviceKey) as
-        | { id: number; token_hash: string | null; public_key: string | null; revoked_at: string | null }
+        | { id: number; token_hash: string | null; revoked_at: string | null }
         | undefined;
       const otherActive = db
         .prepare('SELECT COUNT(*) AS count FROM devices WHERE teacher_id = ? AND device_key != ? AND revoked_at IS NULL')
@@ -483,16 +456,16 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
       if (existing) {
         deviceId = existing.id;
         db.prepare(
-          `UPDATE devices SET token_hash = ?, public_key = COALESCE(?, public_key), hostname = ?, client_version = ?,
+          `UPDATE devices SET token_hash = ?, hostname = ?, client_version = ?,
                               last_seen = ?, revoked_at = NULL WHERE id = ?`,
-        ).run(hashOpaqueToken(token), publicKey, parsed.hostname ?? null, parsed.clientVersion ?? null, timestamp, deviceId);
+        ).run(hashOpaqueToken(token), parsed.hostname ?? null, parsed.clientVersion ?? null, timestamp, deviceId);
       } else {
         const result = db
           .prepare(
-            `INSERT INTO devices (teacher_id, device_key, public_key, token_hash, hostname, client_version, first_seen, last_seen)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO devices (teacher_id, device_key, token_hash, hostname, client_version, first_seen, last_seen)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
           )
-          .run(teacher.id, parsed.deviceKey, publicKey, hashOpaqueToken(token), parsed.hostname ?? null, parsed.clientVersion ?? null, timestamp, timestamp);
+          .run(teacher.id, parsed.deviceKey, hashOpaqueToken(token), parsed.hostname ?? null, parsed.clientVersion ?? null, timestamp, timestamp);
         deviceId = Number(result.lastInsertRowid);
       }
       addAudit(db, 'device', 'device_register', 'device', String(deviceId), { teacherId: teacher.id });
@@ -507,8 +480,6 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
           serverTime: timestamp,
           policy: { heartbeatSeconds: 60, immediateOnNetworkChange: true },
         },
-        publicKey,
-        config,
       );
     } catch (error) {
       return sendError(reply, 400, error instanceof Error ? error.message : '设备注册请求不合法');
@@ -517,13 +488,13 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
 
   app.post('/v1/heartbeat', async (request, reply) => {
     try {
-      const { payload } = parseDeviceBody(request, config);
+      const payload = parseDeviceBody(request);
       const parsed = heartbeatSchema.parse(payload);
       const device = findDeviceByCredentials(db, parsed.deviceKey, parsed.token);
       if (!device || !device.enabled) return sendError(reply, 401, '设备令牌无效或教师已停用');
       const timestamp = nowIso();
       const mac = parsed.mac ? normalizeMac(parsed.mac) : null;
-      const macHash = mac ? hashMac(mac, config.macHashSecret) : null;
+      const macHash = mac ? hashMac(mac, config.adminPassword) : null;
       const dns = parsed.dns ?? [];
       const assignment = findAssignment(db, device.teacher_id);
       const validIp = !parsed.ip || isIPv4(parsed.ip);
@@ -552,8 +523,6 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
         return sendDevicePayload(
           reply,
           { accepted: true, duplicate: true, eventId: existingEvent.id, result: existingEvent.result, serverTime: timestamp },
-          device.public_key,
-          config,
         );
       }
       const event = db
@@ -579,7 +548,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
         );
       const eventId = Number(event.lastInsertRowid);
       broadcast('heartbeat', { eventId, teacherId: device.teacher_id, result, at: timestamp });
-      return sendDevicePayload(reply, { accepted: true, eventId, result, reason, assignment: publicAssignment(assignment), serverTime: timestamp }, device.public_key, config);
+      return sendDevicePayload(reply, { accepted: true, eventId, result, reason, assignment: publicAssignment(assignment), serverTime: timestamp });
     } catch (error) {
       return sendError(reply, 400, error instanceof Error ? error.message : '心跳请求不合法');
     }
@@ -591,7 +560,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
       const device = findDeviceByCredentials(db, String(query.deviceKey ?? ''), String(query.token ?? ''));
       if (!device || !device.enabled) return sendError(reply, 401, '设备令牌无效');
       const assignment = findAssignment(db, device.teacher_id);
-      return sendDevicePayload(reply, { assignment: publicAssignment(assignment), policy: { heartbeatSeconds: 60, immediateOnNetworkChange: true } }, device.public_key, config);
+      return sendDevicePayload(reply, { assignment: publicAssignment(assignment), policy: { heartbeatSeconds: 60, immediateOnNetworkChange: true } });
     } catch (error) {
       return sendError(reply, 400, error instanceof Error ? error.message : '策略请求不合法');
     }
@@ -599,7 +568,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
 
   app.post('/v1/change-requests', async (request, reply) => {
     try {
-      const { payload } = parseDeviceBody(request, config);
+      const payload = parseDeviceBody(request);
       const parsed = changeRequestSchema.parse(payload);
       const device = findDeviceByCredentials(db, parsed.deviceKey, parsed.token);
       if (!device || !device.enabled) return sendError(reply, 401, '设备令牌无效');
@@ -609,7 +578,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
         | Record<string, unknown>
         | undefined;
       if (duplicate) {
-        return sendDevicePayload(reply, { requestId: duplicate.id, status: duplicate.status, assignment: publicAssignment(assignment) }, device.public_key, config);
+        return sendDevicePayload(reply, { requestId: duplicate.id, status: duplicate.status, assignment: publicAssignment(assignment) });
       }
       const changeToken = randomBytes(32).toString('base64url');
       const timestamp = nowIso();
@@ -631,7 +600,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
       db.prepare('UPDATE check_events SET result = ?, reason = ? WHERE id = (SELECT id FROM check_events WHERE teacher_id = ? ORDER BY created_at DESC, id DESC LIMIT 1)')
         .run('modifying', '教师已接受一键修改，等待网络验证', device.teacher_id);
       broadcast('change_requested', { requestId, teacherId: device.teacher_id, at: timestamp });
-      return sendDevicePayload(reply, { requestId, changeToken, status: 'accepted', assignment: publicAssignment(assignment), serverTime: timestamp }, device.public_key, config);
+      return sendDevicePayload(reply, { requestId, changeToken, status: 'accepted', assignment: publicAssignment(assignment), serverTime: timestamp });
     } catch (error) {
       return sendError(reply, 400, error instanceof Error ? error.message : '修改请求不合法');
     }
@@ -639,7 +608,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
 
   app.post('/v1/change-requests/:id/result', async (request, reply) => {
     try {
-      const { payload } = parseDeviceBody(request, config);
+      const payload = parseDeviceBody(request);
       const parsed = changeResultSchema.parse(payload);
       const requestId = Number((request.params as { id: string }).id);
       const device = findDeviceByCredentials(db, parsed.deviceKey, parsed.token);
@@ -668,7 +637,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
         | { id: number; result: string; reason: string }
         | undefined;
       if (existingEvent) {
-        return sendDevicePayload(reply, { accepted: true, duplicate: true, eventId: existingEvent.id, result: existingEvent.result, reason: existingEvent.reason }, device.public_key, config);
+        return sendDevicePayload(reply, { accepted: true, duplicate: true, eventId: existingEvent.id, result: existingEvent.result, reason: existingEvent.reason });
       }
       const assignment = findAssignment(db, device.teacher_id);
       const heartbeat = db
@@ -692,7 +661,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
           timestamp,
         );
       broadcast('change_result', { requestId, teacherId: device.teacher_id, result: mapped.result, at: timestamp });
-      return sendDevicePayload(reply, { accepted: true, eventId: Number(heartbeat.lastInsertRowid), result: mapped.result, reason: mapped.reason, assignment: publicAssignment(assignment) }, device.public_key, config);
+      return sendDevicePayload(reply, { accepted: true, eventId: Number(heartbeat.lastInsertRowid), result: mapped.result, reason: mapped.reason, assignment: publicAssignment(assignment) });
     } catch (error) {
       return sendError(reply, 400, error instanceof Error ? error.message : '修改结果不合法');
     }

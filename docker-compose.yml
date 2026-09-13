@@ -1,10 +1,18 @@
 services:
   schoolipset:
-    image: ghcr.io/alumos/schoolipset:latest
+    image: ghcr.milu.moe/alumos/schoolipset:latest
     container_name: schoolipset
     restart: unless-stopped
-    env_file:
-      - .env
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: "18080"
+      ADMIN_HOST: 0.0.0.0
+      ADMIN_PORT: "18081"
+      DB_PATH: /data/schoolipset.sqlite
+      # 部署前必须替换为你自己的随机强密码，不要提交真实值到 GitHub。
+      ADMIN_PASSWORD: "REPLACE_WITH_A_LONG_RANDOM_PASSWORD"
+      ADMIN_ORIGINS: "http://139.196.136.61:18081"
     ports:
       - "18080:18080"
       - "18081:18081"

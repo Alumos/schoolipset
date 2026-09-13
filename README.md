@@ -39,7 +39,7 @@ docker compose pull
 docker compose up -d
 ```
 
-容器同时监听 `18080`（API）和 `18081`（后台），数据保存于 `schoolipset_data` volume。生产部署应将镜像 tag 固定到 GitHub Actions 生成的 `sha-<commit>`，并通过 `.env` 注入管理员密码、MAC HMAC 密钥和设备加密私钥。
+容器同时监听 `18080`（API）和 `18081`（后台），数据保存于 `schoolipset_data` volume。生产部署可以直接使用仓库里的 Compose 文件，只需将 `environment.ADMIN_PASSWORD` 改成自己的管理员密码。客户端和 API 使用普通 JSON 通信，不需要 RSA/AES 密钥。
 
 ## Windows 客户端
 
@@ -47,8 +47,12 @@ docker compose up -d
 
 客户端修改网络前会请求一次性 change token；UAC 提升后使用 `netsh interface ipv4` 同时设置 IP、子网掩码、网关和 DNS，随后验证配置、网关、DNS、HTTPS 和 `ping baidu.com`。验证失败会尝试回滚原配置并上报证据。
 
-## 加密密钥
+## 客户端地址与传输说明
 
-生产客户端应在 GitHub Actions Secret 中设置 `DEVICE_SERVER_PUBLIC_KEY_JWK`，服务端通过 `DEVICE_SERVER_PRIVATE_KEY` 注入对应私钥，并将 `CLIENT_CRYPTO_REQUIRED=true`。未固定公钥时，客户端会使用 `/v1/device/server-key` bootstrap，只适合开发或受信网络。
+Windows 客户端连接编译在 EXE 中的 API 地址 `http://139.196.136.61:18080/`；管理后台页面地址是 `http://139.196.136.61:18081`。地址不是安全秘密，具备基本逆向能力的人可以从 EXE 中读取；修改地址需要重新编译客户端。
+
+当前版本不要求填写 `DEVICE_SERVER_PRIVATE_KEY`、`DEVICE_SERVER_PUBLIC_KEY`，也不要求配置 GitHub 加密 Secret。设备令牌仍用于识别和撤销客户端，保存在客户端本地时使用 Windows DPAPI 保护。
+
+由于当前部署使用 HTTP，管理员密码和设备令牌在网络传输中不具备 TLS 保护。若将端口暴露到公网，建议后续在 VPS 前面加 HTTPS、VPN 或 SSH 隧道。
 
 管理后台不要长期通过公网明文 HTTP 登录；请在 VPS 上使用域名 HTTPS、VPN 或 SSH 隧道保护 `18081`。

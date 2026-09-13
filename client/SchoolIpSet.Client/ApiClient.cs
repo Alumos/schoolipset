@@ -9,7 +9,6 @@ namespace SchoolIpSet.Client
     internal sealed class ApiClient : IDisposable
     {
         private readonly HttpClient client;
-        private string serverPublicKeyJwk;
 
         public ApiClient()
         {
@@ -18,11 +17,10 @@ namespace SchoolIpSet.Client
         }
 
         public Task<Dictionary<string, object>> RegisterRawAsync(DeviceState state, string name) =>
-            PostEncryptedAsync<Dictionary<string, object>>("v1/device/register", state.PrivateKeyXml, new Dictionary<string, object>
+            PostAsync<Dictionary<string, object>>("v1/device/register", new Dictionary<string, object>
             {
                 { "name", name },
                 { "deviceKey", state.DeviceKey },
-                { "publicKey", state.PublicKeyJwk },
                 { "hostname", Environment.MachineName },
                 { "clientVersion", ServerSettings.ClientVersion },
             });
@@ -46,12 +44,12 @@ namespace SchoolIpSet.Client
                 { "clientStatus", clientStatus },
             };
             if (verification != null) payload["verification"] = verification;
-            return PostEncryptedAsync<Dictionary<string, object>>("v1/heartbeat", state.PrivateKeyXml, payload);
+            return PostAsync<Dictionary<string, object>>("v1/heartbeat", payload);
         }
 
         public Task<Dictionary<string, object>> RequestChangeAsync(DeviceState state)
         {
-            return PostEncryptedAsync<Dictionary<string, object>>("v1/change-requests", state.PrivateKeyXml, new Dictionary<string, object>
+            return PostAsync<Dictionary<string, object>>("v1/change-requests", new Dictionary<string, object>
             {
                 { "deviceKey", state.DeviceKey },
                 { "token", state.Token },
@@ -71,12 +69,12 @@ namespace SchoolIpSet.Client
                 { "finalConfig", ToConfigPayload(result.FinalConfig) },
                 { "verification", result.Verification },
             };
-            return PostEncryptedAsync<Dictionary<string, object>>($"v1/change-requests/{requestId}/result", state.PrivateKeyXml, payload);
+            return PostAsync<Dictionary<string, object>>($"v1/change-requests/{requestId}/result", payload);
         }
 
-        private async Task<T> PostEncryptedAsync<T>(string path, string privateXml, object payload)
+        private async Task<T> PostAsync<T>(string path, object payload)
         {
-            var body = ClientCrypto.Encrypt(payload, await GetServerPublicKeyAsync().ConfigureAwait(false));
+            var body = Json.Serialize(payload);
             using (var content = new StringContent(body, Encoding.UTF8, "application/json"))
             using (var response = await client.PostAsync(path, content).ConfigureAwait(false))
             {
@@ -91,8 +89,7 @@ namespace SchoolIpSet.Client
                     catch (InvalidOperationException) { throw; }
                     catch { throw new InvalidOperationException("服务端请求失败 (" + (int)response.StatusCode + ")"); }
                 }
-                var plain = ClientCrypto.DecryptResponse(responseText, privateXml);
-                return Json.Deserialize<T>(plain);
+                return Json.Deserialize<T>(responseText);
             }
         }
 
@@ -111,24 +108,6 @@ namespace SchoolIpSet.Client
                 { "dns", snapshot.Dns },
                 { "mac", snapshot.Mac },
             };
-        }
-
-        private async Task<string> GetServerPublicKeyAsync()
-        {
-            if (!String.IsNullOrWhiteSpace(serverPublicKeyJwk)) return serverPublicKeyJwk;
-            if (!String.IsNullOrWhiteSpace(ServerSettings.ServerPublicKeyJwk) && !ServerSettings.ServerPublicKeyJwk.StartsWith("__"))
-            {
-                serverPublicKeyJwk = ServerSettings.ServerPublicKeyJwk;
-                return serverPublicKeyJwk;
-            }
-            using (var response = await client.GetAsync("v1/device/server-key").ConfigureAwait(false))
-            {
-                if (!response.IsSuccessStatusCode) throw new InvalidOperationException("服务端加密公钥不可用");
-                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                var values = Json.Deserialize<Dictionary<string, object>>(json);
-                serverPublicKeyJwk = Json.Serialize(values["publicKey"]);
-                return serverPublicKeyJwk;
-            }
         }
 
         public void Dispose() => client.Dispose();

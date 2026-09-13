@@ -1,6 +1,6 @@
 {
   "name": "schoolipset",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "教师办公 IP 合规监测系统",
   "type": "module",
@@ -12,8 +12,7 @@
     "start": "node dist/server/index.js",
     "check": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "vitest run",
-    "format:check": "prettier --check .",
-    "keys:generate": "node scripts/generate-device-keys.mjs"
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",

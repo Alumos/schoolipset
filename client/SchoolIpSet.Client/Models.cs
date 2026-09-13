@@ -8,8 +8,6 @@ namespace SchoolIpSet.Client
         public string Name { get; set; }
         public string DeviceKey { get; set; }
         public string Token { get; set; }
-        public string PrivateKeyXml { get; set; }
-        public string PublicKeyJwk { get; set; }
         public int DeviceId { get; set; }
         public DateTime LastRegisteredAt { get; set; }
     }

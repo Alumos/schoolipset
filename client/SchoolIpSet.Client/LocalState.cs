@@ -31,6 +31,8 @@ namespace SchoolIpSet.Client
         public static void Save(DeviceState state)
         {
             Directory.CreateDirectory(DirectoryPath);
+            // Keep the device token and identity protected at rest even though
+            // the transport protocol is intentionally plain JSON in simple mode.
             var bytes = Encoding.UTF8.GetBytes(Json.Serialize(state));
             var protectedBytes = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
             File.WriteAllText(StatePath, Convert.ToBase64String(protectedBytes), Encoding.UTF8);

@@ -79,20 +79,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Inject pinned server public key when configured
-        shell: pwsh
-        env:
-          SERVER_PUBLIC_KEY_JWK: ${{ secrets.DEVICE_SERVER_PUBLIC_KEY_JWK }}
-        run: |
-          $path = 'client/SchoolIpSet.Client/ServerSettings.cs'
-          $source = Get-Content -LiteralPath $path -Raw
-          if ([string]::IsNullOrWhiteSpace($env:SERVER_PUBLIC_KEY_JWK)) {
-            Write-Warning 'DEVICE_SERVER_PUBLIC_KEY_JWK is not configured; client will use the server-key bootstrap endpoint.'
-          } else {
-            $escaped = $env:SERVER_PUBLIC_KEY_JWK.Replace('\', '\\').Replace('"', '\"')
-            $source = $source.Replace('__SERVER_PUBLIC_KEY_JWK__', $escaped)
-            Set-Content -LiteralPath $path -Value $source -Encoding UTF8
-          }
       - name: Build client
         run: dotnet build client/SchoolIpSet.Client/SchoolIpSet.Client.csproj --configuration Release
       - name: Package client
