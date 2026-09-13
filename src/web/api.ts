@@ -5,6 +5,8 @@ export interface Overview {
   compliant: number;
   actionRequired: number;
   unbound: number;
+  macRegistered: number;
+  macRegistrationRate: number;
   statuses: Record<string, number>;
   generatedAt: string;
   lastImport: { filename: string; rows: number; createdAt: string } | null;
@@ -93,6 +95,24 @@ const request = async <T>(path: string, options: RequestInit = {}): Promise<T> =
   return payload;
 };
 
+const download = async (path: string, filename: string): Promise<void> => {
+  const token = sessionStorage.getItem(tokenKey);
+  const response = await fetch(`${apiBase()}${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as { message?: string };
+    throw new Error(payload.message ?? `下载失败 (${response.status})`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+};
+
 export const api = {
   tokenKey,
   login: async (password: string): Promise<void> => {
@@ -110,6 +130,16 @@ export const api = {
   },
   events: (): Promise<{ data: EventItem[] }> => request('/v1/admin/events?limit=80'),
   clearEvents: (): Promise<{ deleted: number }> => request('/v1/admin/events', { method: 'DELETE' }),
+  exportTeachers: (format: 'xlsx' | 'csv'): Promise<void> => download(`/v1/admin/export/teachers?format=${format}`, `schoolipset-teachers.${format}`),
+  exportEvents: (format: 'xlsx' | 'csv'): Promise<void> => download(`/v1/admin/export/events?format=${format}`, `schoolipset-events.${format}`),
+  exportAuditLogs: (format: 'xlsx' | 'csv'): Promise<void> => download(`/v1/admin/export/audit-logs?format=${format}`, `schoolipset-audit-logs.${format}`),
+  createTeacher: (payload: {
+    name: string;
+    location: string | null;
+    enabled: boolean;
+    assignment: Assignment | null;
+  }): Promise<{ created: boolean; teacherId: number }> =>
+    request('/v1/admin/teachers', { method: 'POST', body: JSON.stringify(payload) }),
   previewImport: (file: File): Promise<ImportPreview> => {
     const form = new FormData();
     form.append('file', file);

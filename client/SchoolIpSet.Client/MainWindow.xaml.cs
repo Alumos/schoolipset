@@ -31,17 +31,13 @@ namespace SchoolIpSet.Client
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            if (controller.NeedsRegistration)
-            {
-                EnrollmentCard.Visibility = Visibility.Visible;
-                StatusCard.Visibility = Visibility.Collapsed;
-                NameBox.Focus();
-            }
-            else
-            {
-                EnrollmentCard.Visibility = Visibility.Collapsed;
-                controller.Start();
-            }
+            // Names are intentionally confirmed on every launch. This supports shared
+            // computers and makes the latest registering computer's MAC authoritative.
+            EnrollmentCard.Visibility = Visibility.Visible;
+            StatusCard.Visibility = Visibility.Collapsed;
+            NameBox.Text = controller.State.Name ?? "";
+            NameBox.Focus();
+            NameBox.SelectAll();
         }
 
         private async void Register_Click(object sender, RoutedEventArgs e)

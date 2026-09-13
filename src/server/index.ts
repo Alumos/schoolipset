@@ -7,6 +7,7 @@ import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
+import XLSX from 'xlsx';
 import { loadConfig, type AppConfig } from './config.js';
 import { openDatabase, type Db, withTransaction } from './db.js';
 import { loginAdmin, requireAdmin, clearExpiredSessions } from './auth.js';
@@ -28,8 +29,10 @@ import {
 const registerSchema = z.object({
   name: z.string().min(1).max(80),
   deviceKey: z.string().min(8).max(160),
+  token: z.string().min(20).max(300).optional(),
   hostname: z.string().max(160).optional(),
   clientVersion: z.string().max(40).optional(),
+  mac: z.string().max(40).optional(),
 });
 
 const heartbeatSchema = z.object({
@@ -88,6 +91,28 @@ const teacherUpdateSchema = z.object({
   enabled: z.boolean(),
   assignment: assignmentUpdateSchema.nullable(),
 });
+
+type TeacherInput = z.infer<typeof teacherUpdateSchema>;
+type NormalizedTeacherInput = {
+  name: string;
+  nameKey: string;
+  location: string | null;
+  enabled: boolean;
+  assignment: {
+    ip: string;
+    prefix: number;
+    gateway: string;
+    dns: string[];
+    interfaceHint: string | null;
+    enabled: boolean;
+  } | null;
+};
+
+class RouteError extends Error {
+  constructor(public readonly statusCode: number, message: string) {
+    super(message);
+  }
+}
 
 type DeviceRow = {
   id: number;
@@ -181,6 +206,133 @@ const addAudit = (
   ).run(actor, action, objectType, objectId, JSON.stringify(metadata), nowIso());
 };
 
+const normalizeTeacherInput = (parsed: TeacherInput): NormalizedTeacherInput => {
+  const name = normalizeDisplayName(parsed.name);
+  if (!name) throw new RouteError(422, '教师姓名不能为空');
+  const assignment = parsed.assignment
+    ? {
+        ip: parsed.assignment.ip.trim(),
+        prefix: parsed.assignment.prefix,
+        gateway: parsed.assignment.gateway.trim(),
+        dns: parsed.assignment.dns.map((value) => value.trim()).filter(Boolean),
+        interfaceHint: parsed.assignment.interfaceHint?.trim() || null,
+        enabled: parsed.assignment.enabled,
+      }
+    : null;
+  if (assignment) {
+    if (!isIPv4(assignment.ip)) throw new RouteError(422, 'IP 地址不是合法 IPv4');
+    if (!isIPv4(assignment.gateway)) throw new RouteError(422, '网关不是合法 IPv4');
+    if (assignment.ip === assignment.gateway) throw new RouteError(422, 'IP 不能与网关相同');
+    if (!sameSubnet(assignment.ip, assignment.gateway, assignment.prefix)) {
+      throw new RouteError(422, '网关必须与 IP 位于同一网段');
+    }
+    if (!assignment.dns.length) throw new RouteError(422, 'DNS 必须至少填写一个 IPv4 地址');
+    if (assignment.dns.some((value) => !isIPv4(value))) throw new RouteError(422, 'DNS 必须是合法 IPv4');
+  }
+  return {
+    name,
+    nameKey: normalizeNameKey(name),
+    location: normalizeDisplayName(parsed.location ?? '') || null,
+    enabled: parsed.enabled,
+    assignment,
+  };
+};
+
+const saveTeacherRecord = (db: Db, teacherId: number | null, parsed: TeacherInput): number => {
+  const input = normalizeTeacherInput(parsed);
+  return withTransaction(db, () => {
+    if (teacherId !== null) {
+      const existing = db.prepare('SELECT id FROM teachers WHERE id = ?').get(teacherId) as { id: number } | undefined;
+      if (!existing) throw new RouteError(404, '教师不存在');
+    }
+    const duplicateName = db.prepare('SELECT id FROM teachers WHERE name_key = ? AND (? IS NULL OR id != ?)').get(input.nameKey, teacherId, teacherId) as
+      | { id: number }
+      | undefined;
+    if (duplicateName) throw new RouteError(409, '教师姓名已存在');
+    if (input.assignment) {
+      const duplicateIp = db.prepare('SELECT t.name FROM ip_assignments a JOIN teachers t ON t.id = a.teacher_id WHERE a.ip = ? AND (? IS NULL OR a.teacher_id != ?)').get(input.assignment.ip, teacherId, teacherId) as
+        | { name: string }
+        | undefined;
+      if (duplicateIp) throw new RouteError(409, `目标 IP 已分配给教师“${duplicateIp.name}”`);
+    }
+
+    const timestamp = nowIso();
+    let savedId = teacherId;
+    if (savedId === null) {
+      const result = db.prepare('INSERT INTO teachers (name, name_key, enabled, location, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(input.name, input.nameKey, input.enabled ? 1 : 0, input.location, timestamp, timestamp);
+      savedId = Number(result.lastInsertRowid);
+    } else {
+      db.prepare('UPDATE teachers SET name = ?, name_key = ?, enabled = ?, location = ?, updated_at = ? WHERE id = ?')
+        .run(input.name, input.nameKey, input.enabled ? 1 : 0, input.location, timestamp, savedId);
+    }
+    if (input.assignment) {
+      const current = db.prepare('SELECT id FROM ip_assignments WHERE teacher_id = ?').get(savedId) as { id: number } | undefined;
+      if (current) {
+        db.prepare('UPDATE ip_assignments SET interface_hint = ?, ip = ?, prefix = ?, gateway = ?, dns_json = ?, enabled = ?, updated_at = ? WHERE teacher_id = ?')
+          .run(input.assignment.interfaceHint, input.assignment.ip, input.assignment.prefix, input.assignment.gateway, JSON.stringify(input.assignment.dns), input.assignment.enabled ? 1 : 0, timestamp, savedId);
+      } else {
+        db.prepare('INSERT INTO ip_assignments (teacher_id, interface_hint, ip, prefix, gateway, dns_json, enabled, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(savedId, input.assignment.interfaceHint, input.assignment.ip, input.assignment.prefix, input.assignment.gateway, JSON.stringify(input.assignment.dns), input.assignment.enabled ? 1 : 0, timestamp);
+      }
+    } else {
+      db.prepare('DELETE FROM ip_assignments WHERE teacher_id = ?').run(savedId);
+    }
+    addAudit(db, 'admin', teacherId === null ? 'create_teacher' : 'update_teacher', 'teacher', String(savedId), {
+      name: input.name,
+      enabled: input.enabled,
+      hasAssignment: Boolean(input.assignment),
+    });
+    return savedId;
+  });
+};
+
+type ExportFormat = 'xlsx' | 'csv';
+
+const readExportFormat = (request: FastifyRequest): ExportFormat => {
+  const format = String((request.query as { format?: string }).format ?? 'xlsx').toLowerCase();
+  if (format !== 'xlsx' && format !== 'csv') throw new RouteError(400, '导出格式只支持 xlsx 或 csv');
+  return format;
+};
+
+const csvValue = (value: unknown): string => {
+  const text = Array.isArray(value) ? value.join(', ') : String(value ?? '');
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+};
+
+const sendExport = (
+  reply: FastifyReply,
+  baseName: string,
+  format: ExportFormat,
+  headers: string[],
+  rows: Array<Record<string, unknown>>,
+): void => {
+  const filename = `${baseName}.${format}`;
+  reply.header('Content-Disposition', `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+  if (format === 'csv') {
+    const csv = `\uFEFF${[headers, ...rows.map((row) => headers.map((header) => csvValue(row[header])))]
+      .map((row) => row.join(','))
+      .join('\r\n')}`;
+    reply.header('Content-Type', 'text/csv; charset=utf-8').send(csv);
+    return;
+  }
+  const worksheet = XLSX.utils.json_to_sheet(rows, { header: headers });
+  worksheet['!cols'] = headers.map((header) => ({ wch: Math.min(36, Math.max(12, header.length + 4)) }));
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, '数据');
+  reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').send(
+    XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }),
+  );
+};
+
+const normalizeReportedMac = (value: unknown): string | null => {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw new RouteError(422, '网卡 MAC 地址不合法');
+  const mac = normalizeMac(value);
+  if (!mac) throw new RouteError(422, '网卡 MAC 地址不合法');
+  return mac;
+};
+
 const findDeviceByCredentials = (db: Db, deviceKey: string, token: string): DeviceRow | undefined =>
   db
     .prepare(
@@ -230,6 +382,14 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
     const bound = (
       db.prepare('SELECT COUNT(DISTINCT teacher_id) AS count FROM devices WHERE revoked_at IS NULL').get() as { count: number }
     ).count;
+    const macRegistered = (
+      db.prepare(
+        `SELECT COUNT(DISTINCT t.id) AS count
+           FROM teachers t
+           JOIN devices d ON d.teacher_id = t.id
+          WHERE t.enabled = 1 AND d.revoked_at IS NULL AND d.mac_address IS NOT NULL AND d.mac_address != ''`,
+      ).get() as { count: number }
+    ).count;
     const statusRows = db
       .prepare(
         `SELECT e.result, COUNT(*) AS count
@@ -256,6 +416,8 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
       compliant,
       actionRequired,
       unbound: Math.max(0, enabled - bound),
+      macRegistered,
+      macRegistrationRate: enabled ? Math.round((macRegistered / enabled) * 100) : 0,
       statuses,
       lastImport: lastImport
         ? {
@@ -370,74 +532,126 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
     return reply.send({ deleted });
   });
 
+  app.get('/v1/admin/export/teachers', { preHandler: requireAdmin }, async (request, reply) => {
+    try {
+      const format = readExportFormat(request);
+      const rows = db.prepare(
+        `SELECT t.id, t.name, t.location, t.enabled, a.ip, a.prefix, a.gateway, a.dns_json, a.interface_hint,
+                a.enabled AS assignment_enabled, d.mac_address, d.client_version, d.last_seen,
+                e.result, e.reason
+           FROM teachers t
+           LEFT JOIN ip_assignments a ON a.teacher_id = t.id
+           LEFT JOIN devices d ON d.id = (
+             SELECT id FROM devices d2 WHERE d2.teacher_id = t.id AND d2.revoked_at IS NULL ORDER BY last_seen DESC LIMIT 1
+           )
+           LEFT JOIN check_events e ON e.id = (
+             SELECT id FROM check_events e2 WHERE e2.teacher_id = t.id ORDER BY created_at DESC, id DESC LIMIT 1
+           )
+          ORDER BY t.id ASC`,
+      ).all() as Array<Record<string, unknown>>;
+      const headers = ['ID', '教师姓名', '办公地点', '教师启用', 'IP 地址', '前缀长度', '网关', 'DNS', '网卡提示', '网络配置启用', '网卡 MAC', '客户端版本', '最近心跳', '当前状态', '最近说明'];
+      const exportRows = rows.map((row) => ({
+        ID: row.id,
+        教师姓名: row.name,
+        办公地点: row.location,
+        教师启用: Number(row.enabled) ? '是' : '否',
+        'IP 地址': row.ip,
+        前缀长度: row.prefix,
+        网关: row.gateway,
+        DNS: parseJsonArray(String(row.dns_json ?? '[]')).join(', '),
+        网卡提示: row.interface_hint,
+        网络配置启用: row.ip ? (Number(row.assignment_enabled) ? '是' : '否') : '',
+        '网卡 MAC': row.mac_address,
+        客户端版本: row.client_version,
+        最近心跳: row.last_seen,
+        当前状态: statusLabel(row.result ? String(row.result) : null, row.last_seen ? String(row.last_seen) : null, Number(row.enabled)),
+        最近说明: row.reason,
+      }));
+      sendExport(reply, 'schoolipset-teachers', format, headers, exportRows);
+    } catch (error) {
+      const statusCode = error instanceof RouteError ? error.statusCode : 400;
+      return sendError(reply, statusCode, error instanceof Error ? error.message : '教师名单导出失败');
+    }
+  });
+
+  app.get('/v1/admin/export/events', { preHandler: requireAdmin }, async (request, reply) => {
+    try {
+      const format = readExportFormat(request);
+      const rows = db.prepare(
+        `SELECT e.id, e.created_at, t.name, t.location, e.observed_ip, e.observed_prefix, e.observed_gateway,
+                e.observed_dns_json, e.observed_mac, d.mac_address, e.result, e.reason, e.source, d.client_version
+           FROM check_events e
+           JOIN teachers t ON t.id = e.teacher_id
+           JOIN devices d ON d.id = e.device_id
+          ORDER BY e.created_at DESC, e.id DESC`,
+      ).all() as Array<Record<string, unknown>>;
+      const headers = ['事件 ID', '时间', '教师姓名', '办公地点', '观测 IP', '观测前缀', '观测网关', '观测 DNS', '网卡 MAC', '结果', '说明', '来源', '客户端版本'];
+      const exportRows = rows.map((row) => ({
+        '事件 ID': row.id,
+        时间: row.created_at,
+        教师姓名: row.name,
+        办公地点: row.location,
+        '观测 IP': row.observed_ip,
+        观测前缀: row.observed_prefix,
+        观测网关: row.observed_gateway,
+        '观测 DNS': parseJsonArray(String(row.observed_dns_json ?? '[]')).join(', '),
+        '网卡 MAC': row.observed_mac ?? row.mac_address,
+        结果: row.result,
+        说明: row.reason,
+        来源: row.source,
+        客户端版本: row.client_version,
+      }));
+      sendExport(reply, 'schoolipset-events', format, headers, exportRows);
+    } catch (error) {
+      const statusCode = error instanceof RouteError ? error.statusCode : 400;
+      return sendError(reply, statusCode, error instanceof Error ? error.message : '检测日志导出失败');
+    }
+  });
+
+  app.get('/v1/admin/export/audit-logs', { preHandler: requireAdmin }, async (request, reply) => {
+    try {
+      const format = readExportFormat(request);
+      const rows = db.prepare('SELECT id, created_at, actor, action, object_type, object_id, metadata_json FROM audit_logs ORDER BY id DESC').all() as Array<Record<string, unknown>>;
+      const headers = ['日志 ID', '时间', '操作者', '操作', '对象类型', '对象 ID', '元数据'];
+      const exportRows = rows.map((row) => ({
+        '日志 ID': row.id,
+        时间: row.created_at,
+        操作者: row.actor,
+        操作: row.action,
+        对象类型: row.object_type,
+        '对象 ID': row.object_id,
+        元数据: row.metadata_json,
+      }));
+      sendExport(reply, 'schoolipset-audit-logs', format, headers, exportRows);
+    } catch (error) {
+      const statusCode = error instanceof RouteError ? error.statusCode : 400;
+      return sendError(reply, statusCode, error instanceof Error ? error.message : '审计日志导出失败');
+    }
+  });
+
+  app.post('/v1/admin/teachers', { preHandler: requireAdmin }, async (request, reply) => {
+    try {
+      const teacherId = saveTeacherRecord(db, null, teacherUpdateSchema.parse(parseDeviceBody(request)));
+      const timestamp = nowIso();
+      broadcast('teacher_updated', { teacherId, at: timestamp });
+      return reply.code(201).send({ created: true, teacherId });
+    } catch (error) {
+      const statusCode = error instanceof RouteError ? error.statusCode : 422;
+      return sendError(reply, statusCode, error instanceof Error ? error.message : '教师信息创建失败');
+    }
+  });
+
   app.put('/v1/admin/teachers/:id', { preHandler: requireAdmin }, async (request, reply) => {
     const teacherId = Number((request.params as { id: string }).id);
     if (!Number.isInteger(teacherId) || teacherId < 1) return sendError(reply, 400, '教师 ID 不合法');
     try {
-      const parsed = teacherUpdateSchema.parse(parseDeviceBody(request));
-      const name = normalizeDisplayName(parsed.name);
-      const nameKey = normalizeNameKey(name);
-      const location = parsed.location ? normalizeDisplayName(parsed.location) : null;
-      const existing = db.prepare('SELECT id, name, name_key FROM teachers WHERE id = ?').get(teacherId) as
-        | { id: number; name: string; name_key: string }
-        | undefined;
-      if (!existing) return sendError(reply, 404, '教师不存在');
-      const duplicateName = db.prepare('SELECT id FROM teachers WHERE name_key = ? AND id != ?').get(nameKey, teacherId) as
-        | { id: number }
-        | undefined;
-      if (duplicateName) return sendError(reply, 409, '教师姓名已存在');
-
-      const assignment = parsed.assignment
-        ? {
-            ip: parsed.assignment.ip.trim(),
-            prefix: parsed.assignment.prefix,
-            gateway: parsed.assignment.gateway.trim(),
-            dns: parsed.assignment.dns.map((value) => value.trim()),
-            interfaceHint: parsed.assignment.interfaceHint?.trim() || null,
-            enabled: parsed.assignment.enabled,
-          }
-        : null;
-      if (assignment) {
-        if (!isIPv4(assignment.ip)) return sendError(reply, 422, 'IP 地址不是合法 IPv4');
-        if (!isIPv4(assignment.gateway)) return sendError(reply, 422, '网关不是合法 IPv4');
-        if (!sameSubnet(assignment.ip, assignment.gateway, assignment.prefix)) {
-          return sendError(reply, 422, '网关必须与 IP 位于同一网段');
-        }
-        if (assignment.dns.some((value) => !isIPv4(value))) return sendError(reply, 422, 'DNS 必须是合法 IPv4');
-        const duplicateIp = db.prepare('SELECT t.name FROM ip_assignments a JOIN teachers t ON t.id = a.teacher_id WHERE a.ip = ? AND a.teacher_id != ?').get(assignment.ip, teacherId) as
-          | { name: string }
-          | undefined;
-        if (duplicateIp) return sendError(reply, 409, `目标 IP 已分配给教师“${duplicateIp.name}”`);
-      }
-
+      saveTeacherRecord(db, teacherId, teacherUpdateSchema.parse(parseDeviceBody(request)));
       const timestamp = nowIso();
-      withTransaction(db, () => {
-        db.prepare('UPDATE teachers SET name = ?, name_key = ?, enabled = ?, location = ?, updated_at = ? WHERE id = ?')
-          .run(name, nameKey, parsed.enabled ? 1 : 0, location, timestamp, teacherId);
-        if (assignment) {
-          const current = db.prepare('SELECT id FROM ip_assignments WHERE teacher_id = ?').get(teacherId) as { id: number } | undefined;
-          if (current) {
-            db.prepare(
-              `UPDATE ip_assignments SET interface_hint = ?, ip = ?, prefix = ?, gateway = ?, dns_json = ?, enabled = ?, updated_at = ? WHERE teacher_id = ?`,
-            ).run(assignment.interfaceHint, assignment.ip, assignment.prefix, assignment.gateway, JSON.stringify(assignment.dns), assignment.enabled ? 1 : 0, timestamp, teacherId);
-          } else {
-            db.prepare(
-              `INSERT INTO ip_assignments (teacher_id, interface_hint, ip, prefix, gateway, dns_json, enabled, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            ).run(teacherId, assignment.interfaceHint, assignment.ip, assignment.prefix, assignment.gateway, JSON.stringify(assignment.dns), assignment.enabled ? 1 : 0, timestamp);
-          }
-        } else {
-          db.prepare('DELETE FROM ip_assignments WHERE teacher_id = ?').run(teacherId);
-        }
-        addAudit(db, 'admin', 'update_teacher', 'teacher', String(teacherId), {
-          name,
-          enabled: parsed.enabled,
-          hasAssignment: Boolean(assignment),
-        });
-      });
       broadcast('teacher_updated', { teacherId, at: timestamp });
       return reply.send({ updated: true, teacherId });
     } catch (error) {
-      return sendError(reply, 422, error instanceof Error ? error.message : '教师信息更新失败');
+      const statusCode = error instanceof RouteError ? error.statusCode : 422;
+      return sendError(reply, statusCode, error instanceof Error ? error.message : '教师信息更新失败');
     }
   });
 
@@ -539,36 +753,47 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
         | { id: number; name: string; enabled: number }
         | undefined;
       if (!teacher || !teacher.enabled) return sendError(reply, 404, '后台没有找到已启用的教师名单');
-      const existing = db
-        .prepare('SELECT id, token_hash, revoked_at FROM devices WHERE teacher_id = ? AND device_key = ?')
-        .get(teacher.id, parsed.deviceKey) as
-        | { id: number; token_hash: string | null; revoked_at: string | null }
-        | undefined;
-      const otherActive = db
-        .prepare('SELECT COUNT(*) AS count FROM devices WHERE teacher_id = ? AND device_key != ? AND revoked_at IS NULL')
-        .get(teacher.id, parsed.deviceKey) as { count: number };
-      if (!existing && otherActive.count > 0) {
-        return sendError(reply, 409, '该教师已有绑定设备，请先由管理员撤销旧设备后再绑定');
-      }
       const token = randomBytes(32).toString('base64url');
       const timestamp = nowIso();
-      let deviceId: number;
-      if (existing) {
-        deviceId = existing.id;
-        db.prepare(
-          `UPDATE devices SET token_hash = ?, hostname = ?, client_version = ?,
-                              last_seen = ?, revoked_at = NULL WHERE id = ?`,
-        ).run(hashOpaqueToken(token), parsed.hostname ?? null, parsed.clientVersion ?? null, timestamp, deviceId);
-      } else {
-        const result = db
-          .prepare(
-            `INSERT INTO devices (teacher_id, device_key, token_hash, hostname, client_version, first_seen, last_seen)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(teacher.id, parsed.deviceKey, hashOpaqueToken(token), parsed.hostname ?? null, parsed.clientVersion ?? null, timestamp, timestamp);
-        deviceId = Number(result.lastInsertRowid);
-      }
-      addAudit(db, 'device', 'device_register', 'device', String(deviceId), { teacherId: teacher.id });
+      const mac = normalizeReportedMac(parsed.mac);
+      const macHash = mac ? hashMac(mac, config.adminPassword) : null;
+      const providedTokenHash = parsed.token ? hashOpaqueToken(parsed.token) : null;
+      const deviceId = withTransaction(db, () => {
+        const authenticatedDevice = providedTokenHash
+          ? db.prepare('SELECT id, teacher_id FROM devices WHERE device_key = ? AND token_hash = ? AND revoked_at IS NULL')
+              .get(parsed.deviceKey, providedTokenHash) as { id: number; teacher_id: number } | undefined
+          : undefined;
+        const existingForTeacher = db.prepare('SELECT id, revoked_at FROM devices WHERE teacher_id = ? AND device_key = ?')
+          .get(teacher.id, parsed.deviceKey) as { id: number; revoked_at: string | null } | undefined;
+        const existingByKey = db.prepare('SELECT id FROM devices WHERE device_key = ?').get(parsed.deviceKey) as { id: number } | undefined;
+        let savedId: number;
+        if (authenticatedDevice) {
+          savedId = authenticatedDevice.id;
+          db.prepare(
+            `UPDATE devices SET teacher_id = ?, token_hash = ?, hostname = ?, mac_address = COALESCE(?, mac_address), mac_hash = COALESCE(?, mac_hash),
+                                client_version = ?, last_seen = ?, revoked_at = NULL WHERE id = ?`,
+          ).run(teacher.id, hashOpaqueToken(token), parsed.hostname ?? null, mac, macHash, parsed.clientVersion ?? null, timestamp, savedId);
+        } else if (existingForTeacher) {
+          savedId = existingForTeacher.id;
+          db.prepare(
+            `UPDATE devices SET token_hash = ?, hostname = ?, mac_address = COALESCE(?, mac_address), mac_hash = COALESCE(?, mac_hash),
+                                client_version = ?, last_seen = ?, revoked_at = NULL WHERE id = ?`,
+          ).run(hashOpaqueToken(token), parsed.hostname ?? null, mac, macHash, parsed.clientVersion ?? null, timestamp, savedId);
+        } else if (existingByKey) {
+          throw new RouteError(409, '设备登记凭据已失效，请删除本机设备状态后重新登记');
+        } else {
+          const result = db.prepare(
+            `INSERT INTO devices (teacher_id, device_key, token_hash, hostname, mac_address, mac_hash, client_version, first_seen, last_seen)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(teacher.id, parsed.deviceKey, hashOpaqueToken(token), parsed.hostname ?? null, mac, macHash, parsed.clientVersion ?? null, timestamp, timestamp);
+          savedId = Number(result.lastInsertRowid);
+        }
+        // A teacher's displayed MAC always represents the most recently registered active computer.
+        db.prepare('UPDATE devices SET revoked_at = ? WHERE teacher_id = ? AND id != ? AND revoked_at IS NULL')
+          .run(timestamp, teacher.id, savedId);
+        addAudit(db, 'device', 'device_register', 'device', String(savedId), { teacherId: teacher.id, macAddress: mac });
+        return savedId;
+      });
       const assignment = findAssignment(db, teacher.id);
       return sendDevicePayload(
         reply,
@@ -582,7 +807,8 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
         },
       );
     } catch (error) {
-      return sendError(reply, 400, error instanceof Error ? error.message : '设备注册请求不合法');
+      const statusCode = error instanceof RouteError ? error.statusCode : 400;
+      return sendError(reply, statusCode, error instanceof Error ? error.message : '设备注册请求不合法');
     }
   });
 
@@ -593,7 +819,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
       const device = findDeviceByCredentials(db, parsed.deviceKey, parsed.token);
       if (!device || !device.enabled) return sendError(reply, 401, '设备令牌无效或教师已停用');
       const timestamp = nowIso();
-      const mac = parsed.mac ? normalizeMac(parsed.mac) : null;
+      const mac = normalizeReportedMac(parsed.mac);
       const macHash = mac ? hashMac(mac, config.adminPassword) : null;
       const dns = parsed.dns ?? [];
       const assignment = findAssignment(db, device.teacher_id);
@@ -741,9 +967,9 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
         return sendDevicePayload(reply, { accepted: true, duplicate: true, eventId: existingEvent.id, result: existingEvent.result, reason: existingEvent.reason });
       }
       const assignment = findAssignment(db, device.teacher_id);
-      const finalMac = parsed.finalConfig?.mac
-        ? normalizeMac(String(parsed.finalConfig.mac))
-        : device.mac_address;
+      const finalMac = parsed.finalConfig?.mac === undefined
+        ? device.mac_address
+        : normalizeReportedMac(parsed.finalConfig.mac);
       const finalMacHash = finalMac ? hashMac(finalMac, config.adminPassword) : null;
       if (finalMac) {
         db.prepare('UPDATE devices SET mac_address = ?, mac_hash = ?, last_seen = ? WHERE id = ?')

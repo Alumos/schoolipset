@@ -61,8 +61,8 @@
                     <TextBlock Text="客户端会定期检查网卡配置，并在发现差异时给出清晰的处理建议。" Margin="0,8,0,0" Foreground="#718096" FontSize="13" />
                     <Border x:Name="EnrollmentCard" Margin="0,24,0,0" Background="White" CornerRadius="18" Padding="22" BorderBrush="#E4EAF0" BorderThickness="1">
                         <StackPanel>
-                            <TextBlock Text="首次连接" FontSize="16" FontWeight="SemiBold" Foreground="#0A1020" />
-                            <TextBlock Text="请输入你的姓名，用于匹配后台分配的办公 IP。" Margin="0,6,0,0" Foreground="#718096" FontSize="12" />
+                            <TextBlock Text="本次使用登记" FontSize="16" FontWeight="SemiBold" Foreground="#0A1020" />
+                            <TextBlock Text="每次打开客户端都请输入当前使用人的姓名，后台会实时更新该人员最近登记电脑的网卡 MAC。" Margin="0,6,0,0" Foreground="#718096" FontSize="12" TextWrapping="Wrap" />
                             <TextBox x:Name="NameBox" Style="{StaticResource FieldStyle}" Margin="0,17,0,0" Height="42" />
                             <Button x:Name="RegisterButton" Click="Register_Click" Style="{StaticResource PrimaryButton}" Margin="0,14,0,0" Height="42" Content="连接并开始监测" />
                         </StackPanel>

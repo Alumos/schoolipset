@@ -50,7 +50,7 @@ namespace SchoolIpSet.Client
                 state.DeviceKey = Guid.NewGuid().ToString("N");
                 LocalState.Save(state);
             }
-            var response = await api.RegisterRawAsync(state, name.Trim()).ConfigureAwait(false);
+            var response = await api.RegisterRawAsync(state, name.Trim(), NetworkProbe.GetActive()).ConfigureAwait(false);
             state.Name = name.Trim();
             state.Token = StringValue(response, "token");
             state.DeviceId = IntValue(response, "deviceId");
