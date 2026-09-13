@@ -23,6 +23,7 @@
     <Reference Include="System.Configuration" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Security" />
+    <Reference Include="System.Web" />
     <Reference Include="System.Web.Extensions" />
     <Reference Include="WindowsBase" />
     <Reference Include="PresentationCore" />
