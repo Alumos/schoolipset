@@ -100,7 +100,7 @@ jobs:
         run: |
           $release = 'client/release/IP-Sentinel-Windows'
           New-Item -ItemType Directory -Force -Path $release | Out-Null
-          Copy-Item 'client/SchoolIpSet.Client/bin/Release/SchoolIpSet.Client.exe' $release
+          Copy-Item 'client/SchoolIpSet.Client/bin/Release/net48/*' $release -Recurse -Force
           Copy-Item 'client/README.md' $release
           Compress-Archive -Path "$release/*" -DestinationPath 'client/release/IP-Sentinel-Windows.zip' -Force
       - name: Upload client artifact
