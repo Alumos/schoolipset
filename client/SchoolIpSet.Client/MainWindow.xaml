@@ -84,7 +84,7 @@
                     <Border x:Name="ActionCard" Visibility="Collapsed" Margin="0,16,0,0" Background="#FFF9EB" CornerRadius="18" Padding="22" BorderBrush="#F5E4B6" BorderThickness="1">
                         <StackPanel>
                             <TextBlock Text="发现配置差异" FontSize="16" FontWeight="SemiBold" Foreground="#8A5B00" />
-                            <TextBlock Text="后台为你分配了新的办公网络配置。点击一键修改后，系统会自动设置 IP、子网掩码、网关和 DNS，并验证网络；验证失败会尝试恢复原配置。" Margin="0,7,0,0" Foreground="#9B7530" FontSize="12" TextWrapping="Wrap" />
+                            <TextBlock Text="后台为你分配了新的办公网络配置。点击一键修改后，系统会请求 Windows 管理员权限，自动设置 IP、子网掩码、网关和 DNS，并验证网络；验证失败会尝试恢复原配置。" Margin="0,7,0,0" Foreground="#9B7530" FontSize="12" TextWrapping="Wrap" />
                             <StackPanel Orientation="Horizontal" Margin="0,17,0,0">
                                 <Button x:Name="ApplyButton" Click="Apply_Click" Style="{StaticResource PrimaryButton}" Height="40" Padding="17,8" Content="一键修改并验证" />
                                 <Button x:Name="DeclineButton" Click="Decline_Click" Style="{StaticResource SecondaryButton}" Height="40" Margin="10,0,0,0" Content="暂不修改" />

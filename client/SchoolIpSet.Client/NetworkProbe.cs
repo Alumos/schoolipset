@@ -45,7 +45,7 @@ namespace SchoolIpSet.Client
             var sameConfiguration = String.Equals(actual.Ip, target.ip, StringComparison.OrdinalIgnoreCase)
                 && actual.Prefix == target.prefix
                 && String.Equals(actual.Gateway, target.gateway, StringComparison.OrdinalIgnoreCase)
-                && actual.Dns.SequenceEqual(targetDns, StringComparer.OrdinalIgnoreCase);
+                && SameDns(actual.Dns, targetDns);
             result.GatewayReachable = !String.IsNullOrWhiteSpace(target.gateway) && PingHost(target.gateway, 1800);
             result.DnsResolved = TryResolve("baidu.com");
             result.HttpsReachable = TryConnect("baidu.com", 443, 2500);
@@ -148,6 +148,19 @@ namespace SchoolIpSet.Client
                 }
             }
             catch { return false; }
+        }
+
+        private static bool SameDns(IEnumerable<string> left, IEnumerable<string> right)
+        {
+            var leftValues = (left ?? Enumerable.Empty<string>())
+                .Where(value => !String.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase);
+            var rightValues = (right ?? Enumerable.Empty<string>())
+                .Where(value => !String.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase);
+            return leftValues.SequenceEqual(rightValues, StringComparer.OrdinalIgnoreCase);
         }
     }
 }

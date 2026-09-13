@@ -11,6 +11,9 @@ namespace SchoolIpSet.Client
             base.OnStartup(e);
             if (e.Args.Any(argument => String.Equals(argument, "--apply-change", StringComparison.OrdinalIgnoreCase)))
             {
+                var stateDirectoryArgument = e.Args.FirstOrDefault(argument => argument.StartsWith("--state-dir=", StringComparison.OrdinalIgnoreCase));
+                if (stateDirectoryArgument != null)
+                    LocalState.UseDirectory(stateDirectoryArgument.Substring("--state-dir=".Length));
                 ShutdownMode = ShutdownMode.OnExplicitShutdown;
                 ChangeWorker.Run();
                 Shutdown();

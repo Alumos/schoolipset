@@ -7,11 +7,20 @@ namespace SchoolIpSet.Client
 {
     internal static class LocalState
     {
-        private static readonly string DirectoryPath = Path.Combine(
+        private static string directoryPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "IP Sentinel");
-        private static readonly string StatePath = Path.Combine(DirectoryPath, "device.state");
-        private static readonly string PendingPath = Path.Combine(DirectoryPath, "pending-change.json");
-        private static readonly string ResultPath = Path.Combine(DirectoryPath, "change-result.json");
+
+        public static string DirectoryPath => directoryPath;
+
+        private static string StatePath => Path.Combine(directoryPath, "device.state");
+        private static string PendingPath => Path.Combine(directoryPath, "pending-change.json");
+        private static string ResultPath => Path.Combine(directoryPath, "change-result.json");
+
+        public static void UseDirectory(string path)
+        {
+            if (String.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path)) return;
+            try { directoryPath = Path.GetFullPath(path); } catch { }
+        }
 
         public static DeviceState Load()
         {

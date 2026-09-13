@@ -116,6 +116,7 @@ namespace SchoolIpSet.Client
                 Verb = "runas",
                 WorkingDirectory = Path.GetDirectoryName(executable),
             };
+            info.Arguments = "--apply-change --state-dir=" + QuoteArgument(LocalState.DirectoryPath);
             using (var process = Process.Start(info))
             {
                 if (process == null) throw new InvalidOperationException("无法启动管理员权限修改程序");
@@ -125,7 +126,10 @@ namespace SchoolIpSet.Client
             if (result == null) throw new InvalidOperationException("没有读取到网络修改结果");
             await api.ReportChangeAsync(state, pending.RequestId, pending.ChangeToken, result).ConfigureAwait(false);
             LocalState.ClearChangeFiles();
-            Message?.Invoke(result.Status == "success" ? "网络配置已修改并通过连通性验证" : "网络修改未通过验证，已执行回滚并上报后台");
+            if (result.Status == "success")
+                Message?.Invoke("网络配置已修改并通过连通性验证");
+            else
+                Message?.Invoke("网络修改未通过验证，已执行回滚并上报后台" + (String.IsNullOrWhiteSpace(result.Error) ? "" : "：" + result.Error));
             await CheckAsync().ConfigureAwait(false);
         }
 
@@ -155,6 +159,8 @@ namespace SchoolIpSet.Client
 
         private static string StringValue(Dictionary<string, object> dictionary, string key) => dictionary.ContainsKey(key) && dictionary[key] != null ? Convert.ToString(dictionary[key]) : "";
         private static int IntValue(Dictionary<string, object> dictionary, string key) => Int32.TryParse(StringValue(dictionary, key), out var value) ? value : 0;
+
+        private static string QuoteArgument(string value) => "\"" + (value ?? "").Replace("\"", "\\\"") + "\"";
 
         public void Dispose()
         {
