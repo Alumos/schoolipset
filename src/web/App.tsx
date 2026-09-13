@@ -14,6 +14,7 @@ import {
   Menu,
   MonitorCheck,
   MoreHorizontal,
+  Pencil,
   RefreshCw,
   Search,
   Server,
@@ -46,6 +47,11 @@ const statusMeta: Record<string, { label: string; variant: BadgeProps['variant']
 };
 
 const eventLabel = (result: string): string => statusMeta[result]?.label ?? result;
+
+const formatMac = (value: string | null | undefined): string => {
+  const compact = (value ?? '').replace(/[.:-]/g, '').toUpperCase();
+  return /^[0-9A-F]{12}$/.test(compact) ? compact.match(/.{2}/g)!.join(':') : '—';
+};
 
 const StatusPill = ({ status }: { status: string }): React.JSX.Element => {
   const meta = statusMeta[status] ?? statusMeta.unknown;
@@ -204,7 +210,7 @@ const Sidebar = ({ page, setPage, open, onClose, onLogout }: { page: Page; setPa
         <div className="mt-auto px-3">
           <div className="server-card"><div className="flex items-center justify-between"><div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_0_4px_rgba(52,211,153,.13)]" /><span className="text-xs font-semibold text-slate-200">服务正常</span></div><Server size={15} className="text-slate-500" /></div><p className="mt-3 text-[11px] leading-5 text-slate-500">API 18080 · 管理台 18081</p></div>
           <button onClick={onLogout} className="mt-4 flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-slate-500 transition hover:bg-white/5 hover:text-white"><LogOut size={16} />退出登录</button>
-          <div className="mt-4 border-t border-white/10 pt-4 text-[10px] text-slate-600">IP Sentinel v0.1 · 2026</div>
+          <div className="mt-4 border-t border-white/10 pt-4 text-[10px] text-slate-600">IP Sentinel v0.2.3 · 2026</div>
         </div>
       </aside>
     </>
@@ -244,16 +250,79 @@ const OverviewPage = ({ overview, events, teachers, onImport }: { overview: Over
 
 const Legend = ({ color, label, value }: { color: string; label: string; value: number }): React.JSX.Element => <div className="flex min-w-[105px] items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${color}`} /><span className="text-slate-500">{label}</span><strong className="ml-auto text-ink">{value}</strong></div>;
 
-const RecentEvents = ({ events }: { events: EventItem[] }): React.JSX.Element => events.length ? <div className="overflow-x-auto"><table className="data-table"><thead><tr><th>教师</th><th>当前 IP</th><th>状态</th><th>时间</th><th /></tr></thead><tbody>{events.map((event) => <tr key={event.id}><td><div className="flex items-center gap-3"><div className="avatar">{event.name.slice(0, 1)}</div><div><p className="font-semibold text-ink">{event.name}</p><p className="mt-0.5 text-xs text-slate-400">{event.location || event.hostname || '未标注位置'}</p></div></div></td><td><span className="font-mono text-xs text-slate-600">{event.observedIp || '—'}</span></td><td><StatusPill status={event.result} /></td><td><span className="text-xs text-slate-400" title={formatFullTime(event.createdAt)}>{formatTime(event.createdAt)}</span></td><td><button className="icon-button icon-button-small"><MoreHorizontal size={16} /></button></td></tr>)}</tbody></table></div> : <EmptyState icon={Activity} title="等待第一条检测事件" description="客户端上线并发送心跳后，最新活动会显示在这里。" />;
+const RecentEvents = ({ events }: { events: EventItem[] }): React.JSX.Element => events.length ? <div className="overflow-x-auto"><table className="data-table"><thead><tr><th>教师</th><th>当前 IP</th><th>状态</th><th>时间</th><th /></tr></thead><tbody>{events.map((event) => <tr key={event.id}><td><div className="flex items-center gap-3"><div className="avatar">{event.name.slice(0, 1)}</div><div><p className="font-semibold text-ink">{event.name}</p><p className="mt-0.5 text-xs text-slate-400">{event.location || (event.macAddress ? `MAC ${formatMac(event.macAddress)}` : '未标注位置')}</p></div></div></td><td><span className="font-mono text-xs text-slate-600">{event.observedIp || '—'}</span></td><td><StatusPill status={event.result} /></td><td><span className="text-xs text-slate-400" title={formatFullTime(event.createdAt)}>{formatTime(event.createdAt)}</span></td><td><button className="icon-button icon-button-small"><MoreHorizontal size={16} /></button></td></tr>)}</tbody></table></div> : <EmptyState icon={Activity} title="等待第一条检测事件" description="客户端上线并发送心跳后，最新活动会显示在这里。" />;
 
-const TeachersPage = ({ teachers, onRevoke }: { teachers: Teacher[]; onRevoke: (teacher: Teacher) => void }): React.JSX.Element => {
+const TeachersPage = ({ teachers, onRevoke, onEdit }: { teachers: Teacher[]; onRevoke: (teacher: Teacher) => void; onEdit: (teacher: Teacher) => void }): React.JSX.Element => {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('all');
   const filtered = useMemo(() => teachers.filter((teacher) => (!query || `${teacher.name}${teacher.location ?? ''}${teacher.assignment?.ip ?? ''}`.toLowerCase().includes(query.toLowerCase())) && (status === 'all' || teacher.status === status)), [teachers, query, status]);
-  return <div className="space-y-5"><section className="panel-card p-0"><div className="flex flex-col gap-4 border-b border-slate-100 px-5 py-5 lg:flex-row lg:items-center lg:justify-between sm:px-6"><div><p className="panel-kicker">DIRECTORY</p><h3 className="panel-title">教师 IP 名单 <span className="ml-2 align-middle rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-500">{teachers.length}</span></h3></div><div className="flex flex-col gap-2 sm:flex-row"><label className="relative"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input className="field-input h-9 w-full pl-9 text-xs sm:w-[190px]" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索姓名、地点或 IP" /></label><select className="field-input h-9 min-w-[130px] text-xs" value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option><option value="compliant">合规</option><option value="non_compliant">IP 不一致</option><option value="modifying">修改中</option><option value="offline">离线</option></select></div></div>{filtered.length ? <div className="overflow-x-auto"><table className="data-table"><thead><tr><th>教师</th><th>分配配置</th><th>设备</th><th>状态</th><th>最近心跳</th><th /></tr></thead><tbody>{filtered.map((teacher) => <tr key={teacher.id}><td><div className="flex items-center gap-3"><div className="avatar avatar-mint">{teacher.name.slice(0, 1)}</div><div><p className="font-semibold text-ink">{teacher.name}</p><p className="mt-0.5 text-xs text-slate-400">{teacher.location || '未标注地点'}</p></div></div></td><td>{teacher.assignment ? <div><p className="font-mono text-xs font-medium text-slate-700">{teacher.assignment.ip}<span className="text-slate-400">/{teacher.assignment.prefix}</span></p><p className="mt-1 text-[11px] text-slate-400">GW {teacher.assignment.gateway}</p></div> : <span className="text-xs text-slate-400">未配置</span>}</td><td>{teacher.device ? <div><p className="max-w-[140px] truncate text-xs font-medium text-slate-600">{teacher.device.hostname || '未命名设备'}</p><p className="mt-1 text-[11px] text-slate-400">v{teacher.device.clientVersion || '—'}</p></div> : <span className="text-xs text-slate-400">未绑定</span>}</td><td><StatusPill status={teacher.status} /></td><td><span className="text-xs text-slate-400" title={formatFullTime(teacher.device?.lastSeen)}>{formatTime(teacher.device?.lastSeen)}</span></td><td><button onClick={() => onRevoke(teacher)} className="icon-button icon-button-small" title="撤销设备绑定"><MoreHorizontal size={16} /></button></td></tr>)}</tbody></table></div> : <EmptyState icon={UsersRound} title="没有匹配的教师" description="尝试调整搜索词或状态筛选。" />}</section></div>;
+  return <div className="space-y-5"><section className="panel-card p-0"><div className="flex flex-col gap-4 border-b border-slate-100 px-5 py-5 lg:flex-row lg:items-center lg:justify-between sm:px-6"><div><p className="panel-kicker">DIRECTORY</p><h3 className="panel-title">教师 IP 名单 <span className="ml-2 align-middle rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-500">{teachers.length}</span></h3></div><div className="flex flex-col gap-2 sm:flex-row"><label className="relative"><Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><input className="field-input h-9 w-full pl-9 text-xs sm:w-[190px]" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索姓名、地点或 IP" /></label><select className="field-input h-9 min-w-[130px] text-xs" value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option><option value="compliant">合规</option><option value="non_compliant">IP 不一致</option><option value="modifying">修改中</option><option value="offline">离线</option></select></div></div>{filtered.length ? <div className="overflow-x-auto"><table className="data-table"><thead><tr><th>教师</th><th>分配配置</th><th>网卡 MAC</th><th>状态</th><th>最近心跳</th><th /></tr></thead><tbody>{filtered.map((teacher) => <tr key={teacher.id}><td><div className="flex items-center gap-3"><div className="avatar avatar-mint">{teacher.name.slice(0, 1)}</div><div><p className="font-semibold text-ink">{teacher.name}</p><p className="mt-0.5 text-xs text-slate-400">{teacher.location || '未标注地点'}</p></div></div></td><td>{teacher.assignment ? <div><p className="font-mono text-xs font-medium text-slate-700">{teacher.assignment.ip}<span className="text-slate-400">/{teacher.assignment.prefix}</span></p><p className="mt-1 text-[11px] text-slate-400">GW {teacher.assignment.gateway}</p></div> : <span className="text-xs text-slate-400">未配置</span>}</td><td>{teacher.device ? <div><p className="font-mono text-xs font-medium text-slate-600">{formatMac(teacher.device.macAddress)}</p><p className="mt-1 text-[11px] text-slate-400">v{teacher.device.clientVersion || '—'}</p></div> : <span className="text-xs text-slate-400">未绑定</span>}</td><td><StatusPill status={teacher.status} /></td><td><span className="text-xs text-slate-400" title={formatFullTime(teacher.device?.lastSeen)}>{formatTime(teacher.device?.lastSeen)}</span></td><td><div className="flex items-center justify-end gap-1"><button onClick={() => onEdit(teacher)} className="icon-button icon-button-small" title="编辑教师信息"><Pencil size={15} /></button><button onClick={() => onRevoke(teacher)} className="icon-button icon-button-small" title="撤销设备绑定"><MoreHorizontal size={16} /></button></div></td></tr>)}</tbody></table></div> : <EmptyState icon={UsersRound} title="没有匹配的教师" description="尝试调整搜索词或状态筛选。" />}</section></div>;
 };
 
-const EventsPage = ({ events }: { events: EventItem[] }): React.JSX.Element => <div className="space-y-5"><section className="panel-card p-0"><div className="border-b border-slate-100 px-5 py-5 sm:px-6"><p className="panel-kicker">AUDIT TRAIL</p><h3 className="panel-title">检测事件 <span className="ml-2 align-middle rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-500">{events.length}</span></h3></div>{events.length ? <div className="overflow-x-auto"><table className="data-table"><thead><tr><th>时间</th><th>教师</th><th>观测配置</th><th>结果</th><th>说明</th></tr></thead><tbody>{events.map((event) => <tr key={event.id}><td className="whitespace-nowrap"><span className="text-xs text-slate-500">{formatFullTime(event.createdAt)}</span></td><td><div className="flex items-center gap-2.5"><div className="avatar avatar-small">{event.name.slice(0, 1)}</div><span className="font-semibold text-ink">{event.name}</span></div></td><td><p className="font-mono text-xs text-slate-600">{event.observedIp || '—'}{event.observedPrefix !== null ? `/${event.observedPrefix}` : ''}</p><p className="mt-1 text-[11px] text-slate-400">GW {event.observedGateway || '—'}</p></td><td><StatusPill status={event.result} /></td><td className="min-w-[260px]"><span className="text-xs leading-5 text-slate-500">{event.reason || '—'}</span></td></tr>)}</tbody></table></div> : <EmptyState icon={Clock3} title="暂时没有检测事件" description="事件会按时间倒序显示，并保留设备上报的处理结果。" />}</section></div>;
+const EventsPage = ({ events, onClear }: { events: EventItem[]; onClear: () => void }): React.JSX.Element => <div className="space-y-5"><section className="panel-card p-0"><div className="flex items-center justify-between border-b border-slate-100 px-5 py-5 sm:px-6"><div><p className="panel-kicker">AUDIT TRAIL</p><h3 className="panel-title">检测事件 <span className="ml-2 align-middle rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-500">{events.length}</span></h3></div><Button variant="outline" size="sm" onClick={onClear} disabled={!events.length}><span className="text-rose-500">清空日志</span></Button></div>{events.length ? <div className="overflow-x-auto"><table className="data-table"><thead><tr><th>时间</th><th>教师</th><th>观测配置</th><th>网卡 MAC</th><th>结果</th><th>说明</th></tr></thead><tbody>{events.map((event) => <tr key={event.id}><td className="whitespace-nowrap"><span className="text-xs text-slate-500">{formatFullTime(event.createdAt)}</span></td><td><div className="flex items-center gap-2.5"><div className="avatar avatar-small">{event.name.slice(0, 1)}</div><span className="font-semibold text-ink">{event.name}</span></div></td><td><p className="font-mono text-xs text-slate-600">{event.observedIp || '—'}{event.observedPrefix !== null ? `/${event.observedPrefix}` : ''}</p><p className="mt-1 text-[11px] text-slate-400">GW {event.observedGateway || '—'}</p></td><td><span className="font-mono text-xs text-slate-600">{formatMac(event.macAddress)}</span></td><td><StatusPill status={event.result} /></td><td className="min-w-[260px]"><span className="text-xs leading-5 text-slate-500">{event.reason || '—'}</span></td></tr>)}</tbody></table></div> : <EmptyState icon={Clock3} title="暂时没有检测事件" description="事件会按时间倒序显示，并保留设备上报的处理结果。" />}</section></div>;
+
+const TeacherEditDialog = ({ teacher, onClose, onDone }: { teacher: Teacher | null; onClose: () => void; onDone: () => void }): React.JSX.Element | null => {
+  const [name, setName] = useState('');
+  const [location, setLocation] = useState('');
+  const [enabled, setEnabled] = useState(true);
+  const [hasAssignment, setHasAssignment] = useState(true);
+  const [ip, setIp] = useState('');
+  const [prefix, setPrefix] = useState('24');
+  const [gateway, setGateway] = useState('');
+  const [dns, setDns] = useState('');
+  const [interfaceHint, setInterfaceHint] = useState('');
+  const [assignmentEnabled, setAssignmentEnabled] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!teacher) return;
+    setName(teacher.name);
+    setLocation(teacher.location ?? '');
+    setEnabled(teacher.enabled);
+    setHasAssignment(Boolean(teacher.assignment));
+    setIp(teacher.assignment?.ip ?? '');
+    setPrefix(String(teacher.assignment?.prefix ?? 24));
+    setGateway(teacher.assignment?.gateway ?? '');
+    setDns((teacher.assignment?.dns ?? []).join(', '));
+    setInterfaceHint(teacher.assignment?.interfaceHint ?? '');
+    setAssignmentEnabled(teacher.assignment?.enabled !== false);
+    setError('');
+  }, [teacher]);
+
+  if (!teacher) return null;
+  const save = async (): Promise<void> => {
+    const numericPrefix = Number(prefix);
+    if (hasAssignment && (!Number.isInteger(numericPrefix) || numericPrefix < 0 || numericPrefix > 32)) {
+      setError('前缀长度必须是 0 到 32 的整数');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await api.updateTeacher(teacher.id, {
+        name: name.trim(),
+        location: location.trim() || null,
+        enabled,
+        assignment: hasAssignment ? {
+          ip: ip.trim(),
+          prefix: numericPrefix,
+          gateway: gateway.trim(),
+          dns: dns.split(/[,，;；\s]+/).map((value) => value.trim()).filter(Boolean),
+          interfaceHint: interfaceHint.trim() || null,
+          enabled: assignmentEnabled,
+        } : null,
+      });
+      onDone();
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal-card max-h-[92vh] max-w-[720px] overflow-y-auto"><div className="flex items-start justify-between"><div><p className="panel-kicker">TEACHER PROFILE</p><h2 className="mt-2 text-xl font-semibold tracking-[-.03em] text-ink">编辑教师信息</h2><p className="mt-2 text-sm text-slate-500">修改后会立即同步到客户端，下次心跳将使用新的网络配置。</p></div><button className="icon-button" onClick={onClose}><X size={18} /></button></div><div className="mt-7 grid gap-4 sm:grid-cols-2"><label className="field-label">教师姓名<input className="field-input mt-2" value={name} onChange={(event) => setName(event.target.value)} /></label><label className="field-label">办公地点<input className="field-input mt-2" value={location} onChange={(event) => setLocation(event.target.value)} placeholder="例如：教学楼 302" /></label></div><label className="mt-4 flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="accent-slate-900" />启用教师账号</label><div className="mt-7 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 sm:p-5"><div className="flex items-start justify-between gap-4"><div><p className="font-semibold text-ink">网络分配</p><p className="mt-1 text-xs leading-5 text-slate-400">关闭后将移除该教师的 IP 配置，客户端不会再收到修改任务。</p></div><label className="flex shrink-0 items-center gap-2 text-xs font-semibold text-slate-600"><input type="checkbox" checked={hasAssignment} onChange={(event) => setHasAssignment(event.target.checked)} className="accent-slate-900" />配置 IP</label></div>{hasAssignment && <div className="mt-5 grid gap-4 sm:grid-cols-2"><label className="field-label">IPv4 地址<input className="field-input mt-2 font-mono" value={ip} onChange={(event) => setIp(event.target.value)} placeholder="10.0.0.10" /></label><label className="field-label">前缀长度<input className="field-input mt-2 font-mono" inputMode="numeric" value={prefix} onChange={(event) => setPrefix(event.target.value)} placeholder="24" /></label><label className="field-label">网关<input className="field-input mt-2 font-mono" value={gateway} onChange={(event) => setGateway(event.target.value)} placeholder="10.0.0.1" /></label><label className="field-label">DNS（可填多个）<input className="field-input mt-2 font-mono" value={dns} onChange={(event) => setDns(event.target.value)} placeholder="10.0.0.1, 223.5.5.5" /></label><label className="field-label sm:col-span-2">网卡提示（可选）<input className="field-input mt-2" value={interfaceHint} onChange={(event) => setInterfaceHint(event.target.value)} placeholder="例如：以太网" /></label><label className="flex items-center gap-2 text-xs font-semibold text-slate-600 sm:col-span-2"><input type="checkbox" checked={assignmentEnabled} onChange={(event) => setAssignmentEnabled(event.target.checked)} className="accent-slate-900" />启用此网络配置</label></div>}</div>{error && <div className="mt-4 rounded-xl bg-rose-50 px-3 py-2.5 text-sm text-rose-600">{error}</div>}<div className="mt-7 flex justify-end gap-2"><Button variant="outline" onClick={onClose}>取消</Button><Button variant="mint" onClick={() => void save()} disabled={saving}>{saving && <RefreshCw size={15} className="animate-spin" />}{saving ? '保存中…' : '保存修改'}</Button></div></section></div>;
+};
 
 const ImportDialog = ({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: () => void }): React.JSX.Element | null => {
   const [preview, setPreview] = useState<ImportPreview | null>(null);
@@ -289,6 +358,7 @@ const App = (): React.JSX.Element => {
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState('');
   const [importOpen, setImportOpen] = useState(false);
+  const [editTeacher, setEditTeacher] = useState<Teacher | null>(null);
   const [toast, setToast] = useState('');
 
   const refresh = async (): Promise<void> => {
@@ -307,7 +377,8 @@ const App = (): React.JSX.Element => {
   if (!authenticated) return <LoginScreen onLogin={() => setAuthenticated(true)} />;
   const logout = (): void => { api.logout(); setAuthenticated(false); };
   const revoke = async (teacher: Teacher): Promise<void> => { if (!window.confirm(`确定撤销 ${teacher.name} 的设备绑定吗？`)) return; try { await api.revokeDevices(teacher.id); setToast(`已撤销 ${teacher.name} 的设备绑定`); await refresh(); } catch (reason) { setToast(reason instanceof Error ? reason.message : '操作失败'); } };
-  return <div className="app-shell"><Sidebar page={page} setPage={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} onLogout={logout} /><main className="main-shell"><Topbar page={page} onRefresh={() => void refresh()} refreshing={refreshing} onMenu={() => setSidebarOpen(true)} onImport={() => setImportOpen(true)} lastUpdated={lastUpdated} /><div className="content-shell">{page === 'overview' && <OverviewPage overview={overview} events={events} teachers={teachers} onImport={() => setImportOpen(true)} />}{page === 'teachers' && <TeachersPage teachers={teachers} onRevoke={(teacher) => void revoke(teacher)} />}{page === 'events' && <EventsPage events={events} />}</div></main><ImportDialog open={importOpen} onClose={() => setImportOpen(false)} onDone={() => { setToast('名单导入成功，实时名单已更新'); void refresh(); }} />{toast && <div className="toast"><Check size={15} className="text-emerald-500" />{toast}<button onClick={() => setToast('')}><X size={14} /></button></div>}</div>;
+  const clearEvents = async (): Promise<void> => { if (!window.confirm('确定清空全部检测日志吗？此操作不可恢复。')) return; try { const result = await api.clearEvents(); setEvents([]); setToast(`已清空 ${result.deleted} 条检测日志`); await refresh(); } catch (reason) { setToast(reason instanceof Error ? reason.message : '清空日志失败'); } };
+  return <div className="app-shell"><Sidebar page={page} setPage={setPage} open={sidebarOpen} onClose={() => setSidebarOpen(false)} onLogout={logout} /><main className="main-shell"><Topbar page={page} onRefresh={() => void refresh()} refreshing={refreshing} onMenu={() => setSidebarOpen(true)} onImport={() => setImportOpen(true)} lastUpdated={lastUpdated} /><div className="content-shell">{page === 'overview' && <OverviewPage overview={overview} events={events} teachers={teachers} onImport={() => setImportOpen(true)} />}{page === 'teachers' && <TeachersPage teachers={teachers} onRevoke={(teacher) => void revoke(teacher)} onEdit={setEditTeacher} />}{page === 'events' && <EventsPage events={events} onClear={() => void clearEvents()} />}</div></main><ImportDialog open={importOpen} onClose={() => setImportOpen(false)} onDone={() => { setToast('名单导入成功，实时名单已更新'); void refresh(); }} /><TeacherEditDialog teacher={editTeacher} onClose={() => setEditTeacher(null)} onDone={() => { setToast('教师信息已更新'); void refresh(); }} />{toast && <div className="toast"><Check size={15} className="text-emerald-500" />{toast}<button onClick={() => setToast('')}><X size={14} /></button></div>}</div>;
 };
 
 export default App;

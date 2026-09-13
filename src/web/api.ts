@@ -25,7 +25,7 @@ export interface Teacher {
   enabled: boolean;
   location: string | null;
   assignment: Assignment | null;
-  device: { hostname: string | null; clientVersion: string | null; lastSeen: string | null } | null;
+  device: { macAddress: string | null; hostname: string | null; clientVersion: string | null; lastSeen: string | null } | null;
   status: string;
   lastReason: string | null;
   lastEventAt: string | null;
@@ -39,6 +39,7 @@ export interface EventItem {
   observedPrefix: number | null;
   observedGateway: string | null;
   observedDns: string[];
+  macAddress: string | null;
   result: string;
   reason: string | null;
   source: string;
@@ -108,6 +109,7 @@ export const api = {
     return request(`/v1/admin/teachers?${query.toString()}`);
   },
   events: (): Promise<{ data: EventItem[] }> => request('/v1/admin/events?limit=80'),
+  clearEvents: (): Promise<{ deleted: number }> => request('/v1/admin/events', { method: 'DELETE' }),
   previewImport: (file: File): Promise<ImportPreview> => {
     const form = new FormData();
     form.append('file', file);
@@ -117,13 +119,20 @@ export const api = {
     request('/v1/admin/import/commit', { method: 'POST', body: JSON.stringify({ previewId, fullSync }) }),
   revokeDevices: (teacherId: number): Promise<{ revoked: number }> =>
     request(`/v1/admin/teachers/${teacherId}/revoke-devices`, { method: 'POST', body: JSON.stringify({}) }),
+  updateTeacher: (teacherId: number, payload: {
+    name: string;
+    location: string | null;
+    enabled: boolean;
+    assignment: Assignment | null;
+  }): Promise<{ updated: boolean; teacherId: number }> =>
+    request(`/v1/admin/teachers/${teacherId}`, { method: 'PUT', body: JSON.stringify(payload) }),
 };
 
 export const openAdminStream = (onEvent: () => void): (() => void) => {
   const token = sessionStorage.getItem(tokenKey);
   if (!token) return () => undefined;
   const source = new EventSource(`${apiBase()}/v1/admin/stream?token=${encodeURIComponent(token)}`);
-  const refreshEvents = ['heartbeat', 'change_requested', 'change_result', 'import_committed', 'teacher_updated'];
+  const refreshEvents = ['heartbeat', 'change_requested', 'change_result', 'import_committed', 'teacher_updated', 'events_cleared'];
   refreshEvents.forEach((event) => source.addEventListener(event, onEvent));
   return () => source.close();
 };

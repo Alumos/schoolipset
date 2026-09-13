@@ -46,6 +46,15 @@ namespace SchoolIpSet.Client
         public string Error { get; set; }
     }
 
+    public sealed class ChangeProgress
+    {
+        public string Stage { get; set; }
+        public string Message { get; set; }
+        public int Percent { get; set; }
+        public NetworkSnapshot Snapshot { get; set; }
+        public NetworkProbeResult Verification { get; set; }
+    }
+
     public sealed class ChangeExecutionResult
     {
         public string Status { get; set; }

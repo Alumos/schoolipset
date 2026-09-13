@@ -22,6 +22,7 @@ namespace SchoolIpSet.Client
         public event Action<NetworkSnapshot, TargetConfiguration> MismatchDetected;
         public event Action<string> Message;
         public event Action<string, NetworkSnapshot> StatusChanged;
+        public event Action<ChangeProgress> ProgressChanged;
 
         public MonitorController()
         {
@@ -66,24 +67,7 @@ namespace SchoolIpSet.Client
             if (!await checkLock.WaitAsync(0).ConfigureAwait(false)) return;
             try
             {
-                var network = NetworkProbe.GetActive();
-                var response = await api.HeartbeatAsync(state, network).ConfigureAwait(false);
-                var result = StringValue(response, "result");
-                var assignment = ReadAssignment(response.ContainsKey("assignment") ? response["assignment"] : null);
-                StatusChanged?.Invoke(result, network);
-                if (assignment != null && result != "compliant")
-                {
-                    var mismatchKey = String.Join("|", network?.Ip, assignment.ip, result);
-                    if (!String.Equals(lastMismatchKey, mismatchKey, StringComparison.Ordinal))
-                    {
-                        lastMismatchKey = mismatchKey;
-                        MismatchDetected?.Invoke(network, assignment);
-                    }
-                }
-                else if (result == "compliant")
-                {
-                    lastMismatchKey = null;
-                }
+                await CheckCoreAsync().ConfigureAwait(false);
             }
             catch (Exception error)
             {
@@ -91,6 +75,28 @@ namespace SchoolIpSet.Client
                 Message?.Invoke("暂时无法连接后台：" + error.Message);
             }
             finally { checkLock.Release(); }
+        }
+
+        private async Task CheckCoreAsync()
+        {
+            var network = NetworkProbe.GetActive();
+            var response = await api.HeartbeatAsync(state, network).ConfigureAwait(false);
+            var result = StringValue(response, "result");
+            var assignment = ReadAssignment(response.ContainsKey("assignment") ? response["assignment"] : null);
+            StatusChanged?.Invoke(result, network);
+            if (assignment != null && result != "compliant")
+            {
+                var mismatchKey = String.Join("|", network?.Ip, assignment.ip, result);
+                if (!String.Equals(lastMismatchKey, mismatchKey, StringComparison.Ordinal))
+                {
+                    lastMismatchKey = mismatchKey;
+                    MismatchDetected?.Invoke(network, assignment);
+                }
+            }
+            else if (result == "compliant")
+            {
+                lastMismatchKey = null;
+            }
         }
 
         public async Task AcceptAndApplyAsync()
@@ -114,7 +120,7 @@ namespace SchoolIpSet.Client
             LocalState.ClearChangeFiles();
             LocalState.SavePending(pending);
             Message?.Invoke("已获得修改任务，正在使用管理员权限配置网卡并验证网络…");
-            await Task.Run(() => ChangeWorker.Run()).ConfigureAwait(false);
+            await Task.Run(() => ChangeWorker.Run(progress => ProgressChanged?.Invoke(progress))).ConfigureAwait(false);
             var result = LocalState.LoadResult();
             if (result == null) throw new InvalidOperationException("没有读取到网络修改结果");
             var detail = result.Status == "success" ? "网络配置已修改并通过验证" : "修改失败：" + result.Error;
@@ -122,7 +128,12 @@ namespace SchoolIpSet.Client
             catch (Exception error) { throw new InvalidOperationException(detail + "；结果上报失败（本地结果已保留）：" + error.Message); }
             LocalState.ClearChangeFiles();
             if (result.Status == "success")
+            {
+                // The change-result event records the operation immediately. A final heartbeat
+                // refreshes the actual post-change IP and makes the admin list update at once.
+                try { await CheckCoreAsync().ConfigureAwait(false); } catch (Exception error) { Message?.Invoke("配置已成功，但刷新后台状态失败：" + error.Message); }
                 Message?.Invoke("网络配置已修改并通过连通性验证");
+            }
             else
                 throw new InvalidOperationException(detail + (result.Status == "rollback_failed" ? "；回滚失败，需要管理员处理。" : "；请检查目标配置和网络验证结果。"));
             }

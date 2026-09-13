@@ -1,6 +1,6 @@
 {
   "name": "schoolipset",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "private": true,
   "description": "教师办公 IP 合规监测系统",
   "type": "module",

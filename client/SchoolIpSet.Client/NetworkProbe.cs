@@ -32,13 +32,15 @@ namespace SchoolIpSet.Client
             return all.OrderByDescending(item => !String.IsNullOrWhiteSpace(item.Gateway)).FirstOrDefault();
         }
 
-        public static NetworkProbeResult Verify(TargetConfiguration target, NetworkSnapshot actual)
+        public static NetworkProbeResult Verify(TargetConfiguration target, NetworkSnapshot actual, Action<ChangeProgress> progress = null)
         {
             var result = new NetworkProbeResult { Snapshot = actual };
+            Report(progress, "read_configuration", "正在读取并核对新的网卡配置…", 28, actual, result);
             if (actual == null)
             {
                 result.Error = "修改后未读取到活动网卡配置";
                 result.SuspectedIpConflict = true;
+                Report(progress, "verification_failed", result.Error, 100, actual, result);
                 return result;
             }
             var targetDns = target.dns ?? new List<string>();
@@ -46,9 +48,13 @@ namespace SchoolIpSet.Client
                 && actual.Prefix == target.prefix
                 && String.Equals(actual.Gateway, target.gateway, StringComparison.OrdinalIgnoreCase)
                 && SameDns(actual.Dns, targetDns);
+            Report(progress, "verify_gateway", "正在验证网关连通性…", 45, actual, result);
             result.GatewayReachable = !String.IsNullOrWhiteSpace(target.gateway) && PingHost(target.gateway, 1800);
+            Report(progress, "verify_dns", "正在验证 DNS 解析…", 62, actual, result);
             result.DnsResolved = TryResolve("baidu.com");
+            Report(progress, "verify_https", "正在验证 HTTPS 网络连接…", 76, actual, result);
             result.HttpsReachable = TryConnect("baidu.com", 443, 2500);
+            Report(progress, "verify_baidu_ping", "正在 ping baidu.com 验证网络…", 90, actual, result);
             result.BaiduPingReachable = PingHost("baidu.com", 2500);
             result.Passed = sameConfiguration && result.GatewayReachable && result.DnsResolved && result.HttpsReachable && result.BaiduPingReachable;
             result.SuspectedIpConflict = !result.GatewayReachable || !result.BaiduPingReachable;
@@ -57,7 +63,20 @@ namespace SchoolIpSet.Client
             else if (!result.DnsResolved) result.Error = "DNS 解析失败";
             else if (!result.HttpsReachable) result.Error = "HTTPS 网络连通性失败";
             else if (!result.BaiduPingReachable) result.Error = "ping baidu.com 失败，疑似目标 IP 被占用或网络策略禁止 ICMP";
+            Report(progress, result.Passed ? "verification_passed" : "verification_failed", result.Passed ? "网络配置和连通性验证通过" : result.Error, 100, actual, result);
             return result;
+        }
+
+        private static void Report(Action<ChangeProgress> progress, string stage, string message, int percent, NetworkSnapshot snapshot, NetworkProbeResult verification)
+        {
+            progress?.Invoke(new ChangeProgress
+            {
+                Stage = stage,
+                Message = message,
+                Percent = percent,
+                Snapshot = snapshot,
+                Verification = verification,
+            });
         }
 
         public static NetworkSnapshot GetExact(string interfaceName)

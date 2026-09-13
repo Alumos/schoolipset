@@ -8,19 +8,21 @@ import rateLimit from '@fastify/rate-limit';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
 import { loadConfig, type AppConfig } from './config.js';
-import { openDatabase, type Db } from './db.js';
+import { openDatabase, type Db, withTransaction } from './db.js';
 import { loginAdmin, requireAdmin, clearExpiredSessions } from './auth.js';
 import { commitImport, parseXlsx, type ImportPreview } from './importer.js';
 import {
   hashMac,
   isIPv4,
   normalizeDns,
+  normalizeDisplayName,
   normalizeMac,
   normalizeNameKey,
   nowIso,
   parseJsonArray,
   constantTimeEqual,
   hashOpaqueToken,
+  sameSubnet,
 } from './utils.js';
 
 const registerSchema = z.object({
@@ -71,10 +73,27 @@ const changeResultSchema = z.object({
   verification: z.record(z.unknown()).optional(),
 });
 
+const assignmentUpdateSchema = z.object({
+  ip: z.string().trim().min(7).max(64),
+  prefix: z.number().int().min(0).max(32),
+  gateway: z.string().trim().min(7).max(64),
+  dns: z.array(z.string().trim().min(7).max(64)).min(1).max(6),
+  interfaceHint: z.string().trim().max(160).nullable().optional(),
+  enabled: z.boolean().default(true),
+});
+
+const teacherUpdateSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  location: z.string().trim().max(160).nullable().optional(),
+  enabled: z.boolean(),
+  assignment: assignmentUpdateSchema.nullable(),
+});
+
 type DeviceRow = {
   id: number;
   teacher_id: number;
   device_key: string;
+  mac_address: string | null;
   token_hash: string | null;
   name: string;
   enabled: number;
@@ -166,7 +185,7 @@ const findDeviceByCredentials = (db: Db, deviceKey: string, token: string): Devi
   db
     .prepare(
       `SELECT d.id, d.teacher_id, d.device_key, d.token_hash,
-              t.name, t.enabled
+              d.mac_address, t.name, t.enabled
          FROM devices d
          JOIN teachers t ON t.id = d.teacher_id
         WHERE d.device_key = ? AND d.token_hash = ? AND d.revoked_at IS NULL`,
@@ -257,7 +276,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
       .prepare(
         `SELECT t.id, t.name, t.enabled, t.location, t.updated_at,
                 a.ip, a.prefix, a.gateway, a.dns_json, a.interface_hint, a.enabled AS assignment_enabled,
-                d.device_key, d.hostname, d.client_version, d.last_seen,
+                d.device_key, d.hostname, d.mac_address, d.client_version, d.last_seen,
                 e.result, e.reason, e.created_at AS event_created_at
            FROM teachers t
            LEFT JOIN ip_assignments a ON a.teacher_id = t.id
@@ -290,6 +309,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
           : null,
         device: row.device_key
           ? {
+              macAddress: row.mac_address,
               hostname: row.hostname,
               clientVersion: row.client_version,
               lastSeen: row.last_seen,
@@ -314,8 +334,8 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
     const rows = db
       .prepare(
         `SELECT e.id, e.teacher_id, t.name, t.location, e.device_id, e.observed_ip, e.observed_prefix,
-                e.observed_gateway, e.observed_dns_json, e.result, e.reason, e.source, e.created_at,
-                d.hostname, d.client_version
+                e.observed_gateway, e.observed_dns_json, e.observed_mac, e.result, e.reason, e.source, e.created_at,
+                d.hostname, d.mac_address, d.client_version
            FROM check_events e
            JOIN teachers t ON t.id = e.teacher_id
            JOIN devices d ON d.id = e.device_id
@@ -331,6 +351,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
         observedPrefix: row.observed_prefix,
         observedGateway: row.observed_gateway,
         observedDns: parseJsonArray(String(row.observed_dns_json ?? '[]')),
+        macAddress: row.observed_mac ?? row.mac_address,
         result: row.result,
         reason: row.reason,
         source: row.source,
@@ -339,6 +360,85 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
         clientVersion: row.client_version,
       })),
     });
+  });
+
+  app.delete('/v1/admin/events', { preHandler: requireAdmin }, async (_request, reply) => {
+    const result = db.prepare('DELETE FROM check_events').run();
+    const deleted = Number(result.changes);
+    addAudit(db, 'admin', 'clear_events', 'check_events', null, { deleted });
+    broadcast('events_cleared', { deleted, at: nowIso() });
+    return reply.send({ deleted });
+  });
+
+  app.put('/v1/admin/teachers/:id', { preHandler: requireAdmin }, async (request, reply) => {
+    const teacherId = Number((request.params as { id: string }).id);
+    if (!Number.isInteger(teacherId) || teacherId < 1) return sendError(reply, 400, '教师 ID 不合法');
+    try {
+      const parsed = teacherUpdateSchema.parse(parseDeviceBody(request));
+      const name = normalizeDisplayName(parsed.name);
+      const nameKey = normalizeNameKey(name);
+      const location = parsed.location ? normalizeDisplayName(parsed.location) : null;
+      const existing = db.prepare('SELECT id, name, name_key FROM teachers WHERE id = ?').get(teacherId) as
+        | { id: number; name: string; name_key: string }
+        | undefined;
+      if (!existing) return sendError(reply, 404, '教师不存在');
+      const duplicateName = db.prepare('SELECT id FROM teachers WHERE name_key = ? AND id != ?').get(nameKey, teacherId) as
+        | { id: number }
+        | undefined;
+      if (duplicateName) return sendError(reply, 409, '教师姓名已存在');
+
+      const assignment = parsed.assignment
+        ? {
+            ip: parsed.assignment.ip.trim(),
+            prefix: parsed.assignment.prefix,
+            gateway: parsed.assignment.gateway.trim(),
+            dns: parsed.assignment.dns.map((value) => value.trim()),
+            interfaceHint: parsed.assignment.interfaceHint?.trim() || null,
+            enabled: parsed.assignment.enabled,
+          }
+        : null;
+      if (assignment) {
+        if (!isIPv4(assignment.ip)) return sendError(reply, 422, 'IP 地址不是合法 IPv4');
+        if (!isIPv4(assignment.gateway)) return sendError(reply, 422, '网关不是合法 IPv4');
+        if (!sameSubnet(assignment.ip, assignment.gateway, assignment.prefix)) {
+          return sendError(reply, 422, '网关必须与 IP 位于同一网段');
+        }
+        if (assignment.dns.some((value) => !isIPv4(value))) return sendError(reply, 422, 'DNS 必须是合法 IPv4');
+        const duplicateIp = db.prepare('SELECT t.name FROM ip_assignments a JOIN teachers t ON t.id = a.teacher_id WHERE a.ip = ? AND a.teacher_id != ?').get(assignment.ip, teacherId) as
+          | { name: string }
+          | undefined;
+        if (duplicateIp) return sendError(reply, 409, `目标 IP 已分配给教师“${duplicateIp.name}”`);
+      }
+
+      const timestamp = nowIso();
+      withTransaction(db, () => {
+        db.prepare('UPDATE teachers SET name = ?, name_key = ?, enabled = ?, location = ?, updated_at = ? WHERE id = ?')
+          .run(name, nameKey, parsed.enabled ? 1 : 0, location, timestamp, teacherId);
+        if (assignment) {
+          const current = db.prepare('SELECT id FROM ip_assignments WHERE teacher_id = ?').get(teacherId) as { id: number } | undefined;
+          if (current) {
+            db.prepare(
+              `UPDATE ip_assignments SET interface_hint = ?, ip = ?, prefix = ?, gateway = ?, dns_json = ?, enabled = ?, updated_at = ? WHERE teacher_id = ?`,
+            ).run(assignment.interfaceHint, assignment.ip, assignment.prefix, assignment.gateway, JSON.stringify(assignment.dns), assignment.enabled ? 1 : 0, timestamp, teacherId);
+          } else {
+            db.prepare(
+              `INSERT INTO ip_assignments (teacher_id, interface_hint, ip, prefix, gateway, dns_json, enabled, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            ).run(teacherId, assignment.interfaceHint, assignment.ip, assignment.prefix, assignment.gateway, JSON.stringify(assignment.dns), assignment.enabled ? 1 : 0, timestamp);
+          }
+        } else {
+          db.prepare('DELETE FROM ip_assignments WHERE teacher_id = ?').run(teacherId);
+        }
+        addAudit(db, 'admin', 'update_teacher', 'teacher', String(teacherId), {
+          name,
+          enabled: parsed.enabled,
+          hasAssignment: Boolean(assignment),
+        });
+      });
+      broadcast('teacher_updated', { teacherId, at: timestamp });
+      return reply.send({ updated: true, teacherId });
+    } catch (error) {
+      return sendError(reply, 422, error instanceof Error ? error.message : '教师信息更新失败');
+    }
   });
 
   app.get('/v1/admin/audit-logs', { preHandler: requireAdmin }, async (request, reply) => {
@@ -513,9 +613,9 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
         reason = '目标配置失败且旧配置回滚失败，需要管理员介入';
       }
       db.prepare(
-        `UPDATE devices SET hostname = COALESCE(?, hostname), mac_hash = COALESCE(?, mac_hash),
+        `UPDATE devices SET hostname = COALESCE(?, hostname), mac_address = COALESCE(?, mac_address), mac_hash = COALESCE(?, mac_hash),
                             client_version = COALESCE(?, client_version), last_seen = ? WHERE id = ?`,
-      ).run(parsed.hostname ?? null, macHash, parsed.clientVersion ?? null, timestamp, device.id);
+      ).run(parsed.hostname ?? null, mac, macHash, parsed.clientVersion ?? null, timestamp, device.id);
       const existingEvent = db.prepare('SELECT * FROM check_events WHERE idempotency_key = ?').get(parsed.idempotencyKey) as
         | Record<string, unknown>
         | undefined;
@@ -529,8 +629,8 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
         .prepare(
           `INSERT INTO check_events
              (teacher_id, device_id, observed_ip, observed_prefix, observed_gateway, observed_dns_json,
-              observed_mac_hash, result, reason, source, idempotency_key, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              observed_mac, observed_mac_hash, result, reason, source, idempotency_key, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           device.teacher_id,
@@ -539,6 +639,7 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
           parsed.prefix ?? null,
           parsed.gateway ?? null,
           JSON.stringify(dns),
+          mac,
           macHash,
           result,
           reason,
@@ -640,12 +741,20 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
         return sendDevicePayload(reply, { accepted: true, duplicate: true, eventId: existingEvent.id, result: existingEvent.result, reason: existingEvent.reason });
       }
       const assignment = findAssignment(db, device.teacher_id);
+      const finalMac = parsed.finalConfig?.mac
+        ? normalizeMac(String(parsed.finalConfig.mac))
+        : device.mac_address;
+      const finalMacHash = finalMac ? hashMac(finalMac, config.adminPassword) : null;
+      if (finalMac) {
+        db.prepare('UPDATE devices SET mac_address = ?, mac_hash = ?, last_seen = ? WHERE id = ?')
+          .run(finalMac, finalMacHash, timestamp, device.id);
+      }
       const heartbeat = db
         .prepare(
           `INSERT INTO check_events
              (teacher_id, device_id, observed_ip, observed_prefix, observed_gateway, observed_dns_json,
-              result, reason, source, idempotency_key, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              observed_mac, observed_mac_hash, result, reason, source, idempotency_key, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           device.teacher_id,
@@ -654,6 +763,8 @@ const registerRoutes = (app: FastifyInstance, db: Db, config: AppConfig): void =
           (parsed.finalConfig?.prefix as number | undefined) ?? null,
           (parsed.finalConfig?.gateway as string | undefined) ?? null,
           JSON.stringify((parsed.finalConfig?.dns as string[] | undefined) ?? []),
+          finalMac,
+          finalMacHash,
           mapped.result,
           mapped.reason,
           'change_result',

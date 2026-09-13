@@ -9,30 +9,37 @@ namespace SchoolIpSet.Client
 {
     internal static class NetworkConfigurator
     {
-        public static ChangeExecutionResult ApplyAndVerify(TargetConfiguration target)
+        public static ChangeExecutionResult ApplyAndVerify(TargetConfiguration target, Action<ChangeProgress> progress = null)
         {
             ValidateTarget(target);
+            Report(progress, "read_original", "正在读取原网络配置…", 5, null, null);
             var previous = NetworkProbe.GetActive(target.interfaceHint);
             if (previous == null)
             {
+                Report(progress, "verification_failed", "未找到可修改的活动网卡", 100, null, null);
                 return new ChangeExecutionResult { Status = "verification_failed_rolled_back", Error = "未找到可修改的活动网卡" };
             }
             try
             {
-                ApplyStatic(target, previous.InterfaceName);
+                Report(progress, "apply_ip", "正在设置 IP、子网掩码和网关…", 18, previous, null);
+                ApplyStatic(target, previous.InterfaceName, progress);
+                Report(progress, "wait_refresh", "正在等待 Windows 刷新网卡配置…", 35, previous, null);
                 var after = WaitForSnapshot(previous.InterfaceName, snapshot => MatchesConfiguration(snapshot, target));
-                var verification = NetworkProbe.Verify(target, after);
+                var verification = NetworkProbe.Verify(target, after, progress);
                 for (var attempt = 0; attempt < 2 && !verification.Passed; attempt++)
                 {
+                    Report(progress, "retry_verification", "配置仍在刷新，正在重新读取并验证…", 92, after, verification);
                     System.Threading.Thread.Sleep(2000);
                     after = NetworkProbe.GetExact(previous.InterfaceName);
-                    verification = NetworkProbe.Verify(target, after);
+                    verification = NetworkProbe.Verify(target, after, progress);
                 }
                 if (verification.Passed)
                 {
                     return new ChangeExecutionResult { Status = "success", PreviousConfig = previous, FinalConfig = after, Verification = verification };
                 }
-                var restored = TryRestore(previous, out var rollbackSnapshot);
+                Report(progress, "rollback", "验证失败，正在恢复原网络配置…", 94, after, verification);
+                var restored = TryRestore(previous, out var rollbackSnapshot, progress);
+                Report(progress, restored ? "rollback_complete" : "rollback_failed", restored ? "原网络配置已恢复" : "原网络配置恢复失败", 100, rollbackSnapshot, verification);
                 return new ChangeExecutionResult
                 {
                     Status = restored ? (verification.SuspectedIpConflict ? "suspected_ip_conflict" : "verification_failed_rolled_back") : "rollback_failed",
@@ -44,7 +51,9 @@ namespace SchoolIpSet.Client
             }
             catch (Exception error)
             {
-                var restored = TryRestore(previous, out var rollbackSnapshot);
+                Report(progress, "rollback", "修改过程发生错误，正在恢复原网络配置…", 94, previous, null);
+                var restored = TryRestore(previous, out var rollbackSnapshot, progress);
+                Report(progress, restored ? "rollback_complete" : "rollback_failed", restored ? "原网络配置已恢复" : "原网络配置恢复失败", 100, rollbackSnapshot, null);
                 return new ChangeExecutionResult
                 {
                     Status = restored ? "verification_failed_rolled_back" : "rollback_failed",
@@ -55,16 +64,17 @@ namespace SchoolIpSet.Client
             }
         }
 
-        private static void ApplyStatic(TargetConfiguration target, string interfaceName)
+        private static void ApplyStatic(TargetConfiguration target, string interfaceName, Action<ChangeProgress> progress = null)
         {
             ValidateInterfaceName(interfaceName);
             RunNetsh($"interface ipv4 set address name=\"{Escape(interfaceName)}\" source=static address={target.ip} mask={NetworkProbe.MaskFromPrefix(target.prefix)} gateway={target.gateway} gwmetric=1 store=persistent");
+            Report(progress, "apply_dns", "正在设置 DNS 服务器…", 25, NetworkProbe.GetExact(interfaceName), null);
             RunNetsh($"interface ipv4 set dnsservers name=\"{Escape(interfaceName)}\" source=static address={target.dns[0]} register=primary validate=no");
             for (var index = 1; index < target.dns.Count; index++)
                 RunNetsh($"interface ipv4 add dnsservers name=\"{Escape(interfaceName)}\" address={target.dns[index]} index={index + 1} validate=no");
         }
 
-        private static bool TryRestore(NetworkSnapshot snapshot, out NetworkSnapshot restoredSnapshot)
+        private static bool TryRestore(NetworkSnapshot snapshot, out NetworkSnapshot restoredSnapshot, Action<ChangeProgress> progress = null)
         {
             restoredSnapshot = null;
             try
@@ -86,7 +96,7 @@ namespace SchoolIpSet.Client
                     dns = snapshot.Dns,
                 };
                 ValidateTarget(target);
-                ApplyStatic(target, snapshot.InterfaceName);
+                ApplyStatic(target, snapshot.InterfaceName, progress);
                 restoredSnapshot = WaitForSnapshot(snapshot.InterfaceName, candidate => MatchesConfiguration(candidate, target));
                 return restoredSnapshot != null && MatchesConfiguration(restoredSnapshot, target);
             }
@@ -171,5 +181,17 @@ namespace SchoolIpSet.Client
         }
 
         private static string Escape(string value) => (value ?? "").Replace("\"", "\\\"");
+
+        private static void Report(Action<ChangeProgress> progress, string stage, string message, int percent, NetworkSnapshot snapshot, NetworkProbeResult verification)
+        {
+            progress?.Invoke(new ChangeProgress
+            {
+                Stage = stage,
+                Message = message,
+                Percent = percent,
+                Snapshot = snapshot,
+                Verification = verification,
+            });
+        }
     }
 }

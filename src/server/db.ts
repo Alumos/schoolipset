@@ -74,6 +74,7 @@ export const openDatabase = (dbPath: string): Db => {
       public_key TEXT,
       token_hash TEXT UNIQUE,
       hostname TEXT,
+      mac_address TEXT,
       mac_hash TEXT,
       client_version TEXT,
       first_seen TEXT NOT NULL,
@@ -90,6 +91,7 @@ export const openDatabase = (dbPath: string): Db => {
       observed_prefix INTEGER,
       observed_gateway TEXT,
       observed_dns_json TEXT NOT NULL DEFAULT '[]',
+      observed_mac TEXT,
       observed_mac_hash TEXT,
       result TEXT NOT NULL,
       reason TEXT,
@@ -142,6 +144,16 @@ export const openDatabase = (dbPath: string): Db => {
     CREATE INDEX IF NOT EXISTS idx_events_teacher_created ON check_events(teacher_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_logs(created_at DESC);
   `);
+
+  // Keep existing SQLite volumes compatible when new device identity fields are added.
+  const ensureColumn = (table: string, column: string, definition: string): void => {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+    if (!columns.some((item) => item.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  };
+  ensureColumn('devices', 'mac_address', 'TEXT');
+  ensureColumn('check_events', 'observed_mac', 'TEXT');
 
   return db;
 };
