@@ -1,0 +1,115 @@
+name: CI · IP Sentinel
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  web:
+    name: Web and API checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Type check
+        run: npm run check
+      - name: Unit tests
+        run: npm test -- --run
+      - name: Build application
+        run: npm run build
+      - name: Build Docker image (pull request validation)
+        if: github.event_name == 'pull_request'
+        run: docker build --tag schoolipset:ci .
+
+  docker:
+    name: Publish one-piece server image
+    needs: web
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/alumos/schoolipset
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Generate image digest summary
+        run: echo "Published ${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
+
+  windows-client:
+    name: Build Windows client
+    needs: web
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Inject pinned server public key when configured
+        shell: pwsh
+        env:
+          SERVER_PUBLIC_KEY_JWK: ${{ secrets.DEVICE_SERVER_PUBLIC_KEY_JWK }}
+        run: |
+          $path = 'client/SchoolIpSet.Client/ServerSettings.cs'
+          $source = Get-Content -LiteralPath $path -Raw
+          if ([string]::IsNullOrWhiteSpace($env:SERVER_PUBLIC_KEY_JWK)) {
+            Write-Warning 'DEVICE_SERVER_PUBLIC_KEY_JWK is not configured; client will use the server-key bootstrap endpoint.'
+          } else {
+            $escaped = $env:SERVER_PUBLIC_KEY_JWK.Replace('\', '\\').Replace('"', '\"')
+            $source = $source.Replace('__SERVER_PUBLIC_KEY_JWK__', $escaped)
+            Set-Content -LiteralPath $path -Value $source -Encoding UTF8
+          }
+      - name: Build client
+        run: dotnet build client/SchoolIpSet.Client/SchoolIpSet.Client.csproj --configuration Release
+      - name: Package client
+        shell: pwsh
+        run: |
+          $release = 'client/release/IP-Sentinel-Windows'
+          New-Item -ItemType Directory -Force -Path $release | Out-Null
+          Copy-Item 'client/SchoolIpSet.Client/bin/Release/SchoolIpSet.Client.exe' $release
+          Copy-Item 'client/README.md' $release
+          Compress-Archive -Path "$release/*" -DestinationPath 'client/release/IP-Sentinel-Windows.zip' -Force
+      - name: Upload client artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IP-Sentinel-Windows-${{ github.sha }}
+          path: client/release/IP-Sentinel-Windows.zip
+      - name: Create GitHub release for version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${{ github.ref_name }}" client/release/IP-Sentinel-Windows.zip --title "IP Sentinel ${{ github.ref_name }}" --generate-notes

@@ -1,0 +1,11 @@
+node_modules
+dist
+.git
+.github
+data
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+夏驾河小学教师办公IP分配表20260826.xlsx
+开发方案设计文档.md
+client
