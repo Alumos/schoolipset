@@ -96,6 +96,10 @@ namespace SchoolIpSet.Client
         public async Task AcceptAndApplyAsync()
         {
             if (NeedsRegistration) return;
+            await checkLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+            Message?.Invoke("正在向后台获取修改任务…");
             var response = await api.RequestChangeAsync(state).ConfigureAwait(false);
             var pending = new PendingChange
             {
@@ -109,28 +113,20 @@ namespace SchoolIpSet.Client
                 throw new InvalidOperationException("后台返回的修改任务不完整");
             LocalState.ClearChangeFiles();
             LocalState.SavePending(pending);
-            var executable = Assembly.GetEntryAssembly().Location;
-            var info = new ProcessStartInfo(executable, "--apply-change")
-            {
-                UseShellExecute = true,
-                Verb = "runas",
-                WorkingDirectory = Path.GetDirectoryName(executable),
-            };
-            info.Arguments = "--apply-change --state-dir=" + QuoteArgument(LocalState.DirectoryPath);
-            using (var process = Process.Start(info))
-            {
-                if (process == null) throw new InvalidOperationException("无法启动管理员权限修改程序");
-                await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
-            }
+            Message?.Invoke("已获得修改任务，正在使用管理员权限配置网卡并验证网络…");
+            await Task.Run(() => ChangeWorker.Run()).ConfigureAwait(false);
             var result = LocalState.LoadResult();
             if (result == null) throw new InvalidOperationException("没有读取到网络修改结果");
-            await api.ReportChangeAsync(state, pending.RequestId, pending.ChangeToken, result).ConfigureAwait(false);
+            var detail = result.Status == "success" ? "网络配置已修改并通过验证" : "修改失败：" + result.Error;
+            try { await api.ReportChangeAsync(state, pending.RequestId, pending.ChangeToken, result).ConfigureAwait(false); }
+            catch (Exception error) { throw new InvalidOperationException(detail + "；结果上报失败（本地结果已保留）：" + error.Message); }
             LocalState.ClearChangeFiles();
             if (result.Status == "success")
                 Message?.Invoke("网络配置已修改并通过连通性验证");
             else
-                Message?.Invoke("网络修改未通过验证，已执行回滚并上报后台" + (String.IsNullOrWhiteSpace(result.Error) ? "" : "：" + result.Error));
-            await CheckAsync().ConfigureAwait(false);
+                throw new InvalidOperationException(detail + (result.Status == "rollback_failed" ? "；回滚失败，需要管理员处理。" : "；请检查目标配置和网络验证结果。"));
+            }
+            finally { checkLock.Release(); }
         }
 
         public async Task DeclineAsync()

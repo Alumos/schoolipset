@@ -22,6 +22,12 @@ namespace SchoolIpSet.Client
                 ApplyStatic(target, previous.InterfaceName);
                 var after = WaitForSnapshot(previous.InterfaceName, snapshot => MatchesConfiguration(snapshot, target));
                 var verification = NetworkProbe.Verify(target, after);
+                for (var attempt = 0; attempt < 2 && !verification.Passed; attempt++)
+                {
+                    System.Threading.Thread.Sleep(2000);
+                    after = NetworkProbe.GetExact(previous.InterfaceName);
+                    verification = NetworkProbe.Verify(target, after);
+                }
                 if (verification.Passed)
                 {
                     return new ChangeExecutionResult { Status = "success", PreviousConfig = previous, FinalConfig = after, Verification = verification };
@@ -93,7 +99,7 @@ namespace SchoolIpSet.Client
             for (var attempt = 0; attempt < 20; attempt++)
             {
                 System.Threading.Thread.Sleep(500);
-                latest = NetworkProbe.GetActive(interfaceName);
+                latest = NetworkProbe.GetExact(interfaceName);
                 if (latest != null && (condition == null || condition(latest))) return latest;
             }
             return latest;
@@ -103,7 +109,7 @@ namespace SchoolIpSet.Client
         {
             var info = new ProcessStartInfo
             {
-                FileName = "netsh.exe",
+                FileName = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "netsh.exe"),
                 Arguments = arguments,
                 CreateNoWindow = true,
                 UseShellExecute = false,
@@ -125,7 +131,7 @@ namespace SchoolIpSet.Client
                 Task.WaitAll(outputTask, errorTask);
                 var error = errorTask.Result;
                 var output = outputTask.Result;
-                if (process.ExitCode != 0) throw new InvalidOperationException("netsh 执行失败: " + (String.IsNullOrWhiteSpace(error) ? output : error).Trim());
+                if (process.ExitCode != 0) throw new InvalidOperationException("netsh 执行失败（" + process.ExitCode + "）：" + arguments + "\n" + (String.IsNullOrWhiteSpace(error) ? output : error).Trim());
             }
         }
 

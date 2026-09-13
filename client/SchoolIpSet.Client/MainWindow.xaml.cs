@@ -17,6 +17,8 @@ namespace SchoolIpSet.Client
         public MainWindow()
         {
             InitializeComponent();
+            Title = "IP Sentinel v" + ServerSettings.ClientVersion + " · 管理员";
+            MessageText.Text = "v" + ServerSettings.ClientVersion + " · 已获得管理员权限";
             controller = new MonitorController();
             controller.MismatchDetected += OnMismatchDetected;
             controller.StatusChanged += OnStatusChanged;
@@ -85,7 +87,11 @@ namespace SchoolIpSet.Client
             if (busy) return;
             busy = true; ApplyButton.IsEnabled = false; DeclineButton.IsEnabled = false; ApplyButton.Content = "正在修改并验证…";
             try { await controller.AcceptAndApplyAsync(); ActionCard.Visibility = Visibility.Collapsed; }
-            catch (Exception error) { MessageText.Text = error.Message; }
+            catch (Exception error)
+            {
+                MessageText.Text = error.Message;
+                MessageBox.Show(this, error.Message, "修改 IP 未完成 · v" + ServerSettings.ClientVersion, MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
             finally { busy = false; ApplyButton.IsEnabled = true; DeclineButton.IsEnabled = true; ApplyButton.Content = "一键修改并验证"; }
         }
 

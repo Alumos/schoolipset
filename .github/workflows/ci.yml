@@ -82,6 +82,7 @@ jobs:
       - name: Build client
         run: dotnet build client/SchoolIpSet.Client/SchoolIpSet.Client.csproj --configuration Release
       - name: Package client
+        # Inspect the embedded EXE manifest, not just the source manifest.
         shell: pwsh
         run: |
           $release = 'client/release'
@@ -91,6 +92,13 @@ jobs:
           if (-not (Test-Path -LiteralPath $source)) {
             throw "未找到客户端构建产物: $source"
           }
+          $mt = Get-ChildItem 'C:/Program Files (x86)/Windows Kits/10/bin/*/x64/mt.exe' | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $mt) { throw 'Windows SDK manifest tool missing' }
+          & $mt.FullName "-inputresource:$source;#1" "-out:$release/embedded.manifest"
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot extract EXE manifest' }
+          [xml]$manifest = Get-Content "$release/embedded.manifest" -Raw
+          $level = $manifest.SelectSingleNode("//*[local-name()='requestedExecutionLevel']").GetAttribute('level')
+          if ($level -ne 'requireAdministrator') { throw "Incorrect EXE privilege level: $level" }
           Copy-Item -LiteralPath $source -Destination $target -Force
           $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
           "IP-Sentinel-Windows.exe  $hash" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8

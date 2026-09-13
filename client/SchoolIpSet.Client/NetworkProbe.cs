@@ -60,6 +60,13 @@ namespace SchoolIpSet.Client
             return result;
         }
 
+        public static NetworkSnapshot GetExact(string interfaceName)
+        {
+            var adapter = NetworkInterface.GetAllNetworkInterfaces().FirstOrDefault(item =>
+                String.Equals(item.Name, interfaceName, StringComparison.OrdinalIgnoreCase));
+            return adapter == null ? null : ToSnapshot(adapter);
+        }
+
         private static bool IsCandidate(NetworkInterface networkInterface)
         {
             if (networkInterface.OperationalStatus != OperationalStatus.Up) return false;

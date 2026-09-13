@@ -65,10 +65,10 @@ namespace SchoolIpSet.Client
                 { "token", state.Token },
                 { "changeToken", changeToken },
                 { "status", result.Status },
-                { "previousConfig", ToConfigPayload(result.PreviousConfig) },
-                { "finalConfig", ToConfigPayload(result.FinalConfig) },
-                { "verification", result.Verification },
+                { "verification", new Dictionary<string, object> { { "checks", result.Verification }, { "error", result.Error } } },
             };
+            if (result.PreviousConfig != null) payload["previousConfig"] = ToConfigPayload(result.PreviousConfig);
+            if (result.FinalConfig != null) payload["finalConfig"] = ToConfigPayload(result.FinalConfig);
             return PostAsync<Dictionary<string, object>>($"v1/change-requests/{requestId}/result", payload);
         }
 
