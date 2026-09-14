@@ -211,7 +211,7 @@ const Sidebar = ({ page, setPage, open, onClose, onLogout }: { page: Page; setPa
         <div className="mt-auto px-3">
           <div className="server-card"><div className="flex items-center justify-between"><div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_0_4px_rgba(52,211,153,.13)]" /><span className="text-xs font-semibold text-slate-200">服务正常</span></div><Server size={15} className="text-slate-500" /></div><p className="mt-3 text-[11px] leading-5 text-slate-500">API 18080 · 管理台 18081</p></div>
           <button onClick={onLogout} className="mt-4 flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-slate-500 transition hover:bg-white/5 hover:text-white"><LogOut size={16} />退出登录</button>
-          <div className="mt-4 border-t border-white/10 pt-4 text-[10px] text-slate-600">IP Sentinel v0.2.4 · 2026</div>
+          <div className="mt-4 border-t border-white/10 pt-4 text-[10px] text-slate-600">IP Sentinel v0.2.5 · 2026</div>
         </div>
       </aside>
     </>

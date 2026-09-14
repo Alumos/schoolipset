@@ -1,4 +1,4 @@
-# IP Sentinel Windows 客户端
+# IP Sentinel Windows 客户端 v0.2.5
 
 该客户端面向 Windows 7 SP1、Windows 10、Windows 11，目标运行时为 .NET Framework 4.8。
 

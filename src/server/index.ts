@@ -29,7 +29,9 @@ import {
 const registerSchema = z.object({
   name: z.string().min(1).max(80),
   deviceKey: z.string().min(8).max(160),
-  token: z.string().min(20).max(300).optional(),
+  // The older Windows client serializes an empty token as JSON null on first run.
+  // Treat it the same as an omitted token so first-time registration succeeds.
+  token: z.string().min(20).max(300).nullable().optional(),
   hostname: z.string().max(160).optional(),
   clientVersion: z.string().max(40).optional(),
   mac: z.string().max(40).optional(),

@@ -16,16 +16,19 @@ namespace SchoolIpSet.Client
             client.DefaultRequestHeaders.UserAgent.ParseAdd("IP-Sentinel-Client/" + ServerSettings.ClientVersion);
         }
 
-        public Task<Dictionary<string, object>> RegisterRawAsync(DeviceState state, string name, NetworkSnapshot network) =>
-            PostAsync<Dictionary<string, object>>("v1/device/register", new Dictionary<string, object>
+        public Task<Dictionary<string, object>> RegisterRawAsync(DeviceState state, string name, NetworkSnapshot network)
+        {
+            var payload = new Dictionary<string, object>
             {
                 { "name", name },
                 { "deviceKey", state.DeviceKey },
-                { "token", state.Token },
                 { "hostname", Environment.MachineName },
                 { "clientVersion", ServerSettings.ClientVersion },
                 { "mac", network?.Mac },
-            });
+            };
+            if (!String.IsNullOrWhiteSpace(state.Token)) payload["token"] = state.Token;
+            return PostAsync<Dictionary<string, object>>("v1/device/register", payload);
+        }
 
         public Task<Dictionary<string, object>> HeartbeatAsync(DeviceState state, NetworkSnapshot network, string clientStatus = "normal", Dictionary<string, object> verification = null)
         {
